@@ -11,6 +11,7 @@ import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../s
 import {get} from "svelte/store"
 import { CharXWriter } from "./processzip"
 import type { CharacterCardV3 } from "@risuai/ccardlib"
+import { convertRisuBookToCCv3Lorebook } from "../characterCards"
 
 export interface MCPModule{
     url: string
@@ -62,6 +63,8 @@ export async function exportCharXModule(module:RisuModule, arg:{
                     namespace: module.namespace || '',
                     customModuleToggle: module.customModuleToggle || '',
                     mcp: module.mcp || null,
+                    customScripts: module.regex || [],
+                    triggerScripts: module.trigger || [],
                 }
             },
             system_prompt: '',
@@ -72,12 +75,23 @@ export async function exportCharXModule(module:RisuModule, arg:{
             scenario: '',
             creator_notes: module.description || '',
             group_only_greetings: [],
-            character_book: {
-                name: module.name || '',
-                extensions: {},
-                entries: []
-            }  //TODO
+            character_book: convertRisuBookToCCv3Lorebook(module.lorebook || []),
+            assets: [],
+            
         }
+    }
+
+    const assets = safeStructuredClone(module.assets || [])
+    for(let i=0;i<assets.length;i++){
+        const asset = assets[i]
+        alertStore.set({
+            type: 'wait',
+            msg: `Loading... (Adding Assets ${i} / ${assets.length})`
+        })
+        let rData = await readImage(asset[1])
+
+        const baseDir = `assets/other/image/${asset[0]}.webp`
+        await writer.write(baseDir, Buffer.from(await convertImage(rData)))
     }
 
     await writer.write("card.json", Buffer.from(JSON.stringify(card, null, 4)))    
@@ -89,7 +103,7 @@ export async function exportCharXModule(module:RisuModule, arg:{
     const buffer = vr.buf.buffer
 
     if(saveData){
-        await downloadFile(module.name + '.charx', buffer)
+        await downloadFile(module.name + '.module.charx', buffer)
     }
     if(alertEnd){
         alertNormal(language.successExport)
