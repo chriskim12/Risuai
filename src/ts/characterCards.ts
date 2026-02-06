@@ -14,7 +14,7 @@ import { reencodeImage } from "./process/files/inlays"
 import { PngChunk } from "./pngChunk"
 import type { OnnxModelFiles } from "./process/transformers"
 import { CharXImporter, CharXSkippableChecker, CharXWriter } from "./process/processzip"
-import { exportModule, readModule, type RisuModule } from "./process/modules"
+import { exportAsLegacyModule, readAsLegacyModule, type RisuModule } from "./process/modules"
 import { readFile } from "@tauri-apps/plugin-fs"
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { AccountStorage } from "./storage/accountStorage"
@@ -147,7 +147,7 @@ export async function importCharacterProcess(f:{
         }
         let lorebook:loreBook[] = null
         if(importer.moduleData){
-            const md = await readModule(Buffer.from(importer.moduleData))
+            const md = await readAsLegacyModule(Buffer.from(importer.moduleData))
             card.data.extensions ??= {}
             card.data.extensions.risuai ??= {}
             card.data.extensions.risuai.triggerscript = md.trigger ?? []
@@ -505,7 +505,7 @@ export async function characterURLImport() {
             return
         }
         const module = new Uint8Array(await data.arrayBuffer())
-        const md = await readModule(Buffer.from(module))
+        const md = await readAsLegacyModule(Buffer.from(module))
         md.id = v4()
         const db = getDatabase()
         db.modules.push(md)
@@ -589,7 +589,7 @@ export async function characterURLImport() {
             return
         }
         if(name.endsWith('risum')){
-            const md = await readModule(Buffer.from(data))
+            const md = await readAsLegacyModule(Buffer.from(data))
             md.id = v4()
             const db = getDatabase()
             db.modules.push(md)
@@ -1501,7 +1501,7 @@ export async function exportCharacterCard(char:character, type:'png'|'json'|'cha
                 }
                 delete card.data.extensions.risuai.triggerscript
                 delete card.data.extensions.risuai.customScripts
-                await writer.write("module.risum", await exportModule(md, {
+                await writer.write("module.risum", await exportAsLegacyModule(md, {
                     alertEnd: false,
                     saveData: false
                 }))

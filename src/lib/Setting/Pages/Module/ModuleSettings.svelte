@@ -4,7 +4,7 @@
     import { DBState } from 'src/ts/stores.svelte';
     import Button from "src/lib/UI/GUI/Button.svelte";
     import ModuleMenu from "src/lib/Setting/Pages/Module/ModuleMenu.svelte";
-    import { exportModule, importModule, refreshModules, type RisuModule } from "src/ts/process/modules";
+    import { exportCharXModule, importModule, refreshModules, type RisuModule } from "src/ts/process/modules";
     import { SquarePen, TrashIcon, Globe, Share2Icon, PlusIcon, HardDriveUpload, Waypoints } from "@lucide/svelte";
     import { v4 } from "uuid";
     import { tooltip } from "src/ts/gui/tooltip";
@@ -77,7 +77,7 @@
                         {#if !rmodule.mcp}
                             <button class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer" use:tooltip={language.download} onclick={async (e) => {
                                 e.stopPropagation()
-                                exportModule(rmodule)
+                                exportCharXModule(rmodule)
                             }}>
                                 <Share2Icon size={18}/>
                             </button>

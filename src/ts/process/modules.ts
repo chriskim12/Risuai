@@ -1,7 +1,7 @@
 import { language } from "src/lang"
 import { alertClear, alertConfirm, alertError, alertModuleSelect, alertNormal, alertStore, alertWait } from "../alert"
 import { getCurrentCharacter, getCurrentChat, getDatabase, setCurrentCharacter, setDatabase, type customscript, type loreBook, type triggerscript } from "../storage/database.svelte"
-import { AppendableBuffer, downloadFile, forageStorage, readImage, saveAsset } from "../globalApi.svelte"
+import { AppendableBuffer, downloadFile, forageStorage, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte"
 import { selectSingleFile, sleep } from "../util"
 import { v4 } from "uuid"
 import { convertExternalLorebook } from "./lorebook.svelte"
@@ -9,6 +9,8 @@ import { decodeRPack, encodeRPack } from "../rpack/rpack_js"
 import { convertImage } from "../parser.svelte"
 import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte"
 import {get} from "svelte/store"
+import { CharXWriter } from "./processzip"
+import type { CharacterCardV3 } from "@risuai/ccardlib"
 
 export interface MCPModule{
     url: string
@@ -31,7 +33,71 @@ export interface RisuModule{
     mcp?:MCPModule
 }
 
-export async function exportModule(module:RisuModule, arg:{
+export async function exportCharXModule(module:RisuModule, arg:{
+    alertEnd?:boolean
+    saveData?:boolean
+} = {}){
+    const alertEnd = arg.alertEnd ?? true
+    const saveData = arg.saveData ?? true
+    const vr = new VirtualWriter()
+
+    const writer = new CharXWriter(vr)
+
+    const card:CharacterCardV3 = {
+        spec: "chara_card_v3",
+        spec_version: "3.0",
+        data: {
+            name: module.name || '',
+            description: '',
+            tags: [],
+            creator: '',
+            character_version: '',
+            mes_example: '',
+            extensions: {
+                risuai: {
+                    charx_type: 'module',
+                    lowLevelAccess: module.lowLevelAccess || false,
+                    hideIcon: module.hideIcon || false,
+                    backgroundEmbedding: module.backgroundEmbedding || '',
+                    namespace: module.namespace || '',
+                    customModuleToggle: module.customModuleToggle || '',
+                    mcp: module.mcp || null,
+                }
+            },
+            system_prompt: '',
+            post_history_instructions: '',
+            first_mes: '',
+            alternate_greetings: [],
+            personality: '',
+            scenario: '',
+            creator_notes: module.description || '',
+            group_only_greetings: [],
+            character_book: {
+                name: module.name || '',
+                extensions: {},
+                entries: []
+            }  //TODO
+        }
+    }
+
+    await writer.write("card.json", Buffer.from(JSON.stringify(card, null, 4)))    
+
+    await writer.end()
+
+    await sleep(10)
+
+    const buffer = vr.buf.buffer
+
+    if(saveData){
+        await downloadFile(module.name + '.charx', buffer)
+    }
+    if(alertEnd){
+        alertNormal(language.successExport)
+    }
+    return buffer
+}
+
+export async function exportAsLegacyModule(module:RisuModule, arg:{
     alertEnd?:boolean
     saveData?:boolean
 } = {}){
@@ -95,7 +161,7 @@ export async function exportModule(module:RisuModule, arg:{
     return apb.buffer
 }
 
-export async function readModule(buf:Buffer):Promise<RisuModule> {
+export async function readAsLegacyModule(buf:Buffer):Promise<RisuModule> {
     let pos = 0
 
     const readLength = () => {
@@ -227,7 +293,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
 }
 
 export async function importModule(){
-    const f = await selectSingleFile(['json', 'lorebook', 'risum'])
+    const f = await selectSingleFile(['json', 'lorebook', 'risum', 'charx'])
     if(!f){
         return
     }
@@ -236,7 +302,7 @@ export async function importModule(){
     if(f.name.endsWith('.risum')){
         try {
             const buf = Buffer.from(fileData)
-            const module = await readModule(buf)
+            const module = await readAsLegacyModule(buf)
             db.modules.push(module)
             setDatabase(db)
             return   
@@ -245,6 +311,13 @@ export async function importModule(){
             alertError(language.errors.noData)
         }
     }
+    else{
+        await importSuperLegacyModule(fileData)
+    }
+}
+
+async function importSuperLegacyModule(fileData:Uint8Array<ArrayBufferLike>){
+    const db = getDatabase()
     try {
         const importData = JSON.parse(Buffer.from(fileData).toString())
         if(importData.type === 'risuModule'){
