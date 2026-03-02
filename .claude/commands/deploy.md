@@ -7,7 +7,7 @@
 Run the following command using the Bash tool:
 
 ```bash
-ssh -i /home/chris/risu/ssh-key-2026-03-02.key -o StrictHostKeyChecking=no ubuntu@150.230.7.17 "cd ~/risuai && git pull && pnpm build"
+ssh -i /home/chris/risu/ssh-key-2026-03-02.key -o StrictHostKeyChecking=no ubuntu@150.230.7.17 "cd ~/risuai && git pull && docker compose up --build -d"
 ```
 
 - 실시간 출력을 사용자에게 보여줍니다.
