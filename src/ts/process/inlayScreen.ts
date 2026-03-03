@@ -2,7 +2,7 @@ import { writeInlayImage } from "./files/inlays";
 import type { character } from "../storage/database.svelte";
 import { generateAIImage } from "./stableDiff";
 
-const imggenRegex = [/<ImgGen="(.+?)">/gi, /{{ImgGen="(.+?)"}}/gi] as const
+const imggenRegex = [/<ImgGen="([\s\S]+?)">/gi, /{{ImgGen="([\s\S]+?)"}}/gi] as const
 
 export function runInlayScreen(char:character, data:string):{text:string, promise?:Promise<string>} {
     if(char.inlayViewScreen){      
