@@ -176,9 +176,7 @@ export async function getInlayAssetBlob(id: string){
 
     let data: Blob;
     if(typeof img.data === 'string'){
-        // Migrate to Blob
         data = base64ToBlob(img.data)
-        setInlayAsset(id, { ...img, data })
     } else {
         data = img.data
     }
