@@ -55,7 +55,7 @@ export async function postInlayAsset(img:{
 
         await inlayStorage.setItem(imgid, {
             name: img.name,
-            data: audioBlob,
+            data: await blobToBase64(audioBlob),
             ext: extention,
             type: 'audio'
         })
@@ -69,7 +69,7 @@ export async function postInlayAsset(img:{
 
         await inlayStorage.setItem(imgid, {
             name: img.name,
-            data: videoBlob,
+            data: await blobToBase64(videoBlob),
             ext: extention,
             type: 'video'
         })
@@ -107,14 +107,15 @@ export async function writeInlayImage(imgObj:HTMLImageElement, arg:{name?:string
             resolve(null)
         }
     })
-    const imageBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-
+    const imageBlob = await new Promise<Blob>(resolve => canvas.toBlob(resolve, 'image/png'));
+    // Store as base64 string — iOS/WebKit IndexedDB cannot serialize Blob objects
+    const imageData = await blobToBase64(imageBlob);
 
     const imgid = arg.id ?? v4()
 
     await inlayStorage.setItem(imgid, {
         name: arg.name ?? imgid,
-        data: imageBlob,
+        data: imageData,
         ext: 'png',
         height: drawHeight,
         width: drawWidth,
