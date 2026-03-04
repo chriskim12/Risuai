@@ -416,20 +416,30 @@ export async function requestGoogleCloudVertex(arg:RequestDataArgumentExtended):
     }
 
     async function generateToken(email:string,key:string){
+        const normalizedEmail = email.trim().replace(/^"|"$/g, "")
+        const normalizedKey = key.trim().replace(/^"|"$/g, "")
+
         if (!window.crypto || !window.crypto.subtle) {
             throw new Error("Web Crypto API is not available in this environment. Please ensure you are using HTTPS.");
         }
         // Input validation
-        if (!email.includes("gserviceaccount.com")) {
+        if (!normalizedEmail.includes("gserviceaccount.com")) {
             throw new Error("Invalid Vertex client email. Must include gserviceaccount.com");
         }
-        if (!key.includes("-----BEGIN PRIVATE KEY-----") ||
-            !key.includes("-----END PRIVATE KEY-----")) {
+        if (!normalizedKey.includes("-----BEGIN PRIVATE KEY-----") ||
+            !normalizedKey.includes("-----END PRIVATE KEY-----")) {
             throw new Error("Invalid Vertex private key. Must include proper key markers.");
         }
 
         function str2ab(privateKey:string):ArrayBuffer {
-            const binaryString = atob(privateKey.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\\n/g, ""));
+            const cleanedKey = privateKey
+                .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/g, "")
+                .replace(/\\r\\n/g, "")
+                .replace(/\\n/g, "")
+                .replace(/\r?\n/g, "")
+                .replace(/\s+/g, "");
+
+            const binaryString = atob(cleanedKey);
             const bytes = new Uint8Array(binaryString.length);
             for (let i = 0; i < binaryString.length; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
@@ -447,26 +457,15 @@ export async function requestGoogleCloudVertex(arg:RequestDataArgumentExtended):
         }
 
         const time = Math.floor(Date.now() / 1000);
-    
+
         const header = {
             alg: "RS256",
             typ: "JWT",
         };
 
-        const claimSet = {
-            iss: email,
-            iat: time,
-            exp: time + 3600,
-            scope: "https://www.googleapis.com/auth/cloud-platform",
-            aud: "https://oauth2.googleapis.com/token",
-        };
-
-        const encodedHeader = base64url(new TextEncoder().encode(JSON.stringify(header)));
-        const encodedClaimSet = base64url(new TextEncoder().encode(JSON.stringify(claimSet)));
-    
         const cryptokey = await crypto.subtle.importKey(
             "pkcs8",
-            str2ab(key),
+            str2ab(normalizedKey),
             {
                 name: "RSASSA-PKCS1-v1_5",
                 hash: { name: "SHA-256" },
@@ -474,45 +473,76 @@ export async function requestGoogleCloudVertex(arg:RequestDataArgumentExtended):
             false,
             ["sign"]
         );
-    
-        const signature = await crypto.subtle.sign(
-            "RSASSA-PKCS1-v1_5",
-            cryptokey,
-            new TextEncoder().encode(`${encodedHeader}.${encodedClaimSet}`)
-        );
 
-        const jwt = `${encodedHeader}.${encodedClaimSet}.${base64url(new Uint8Array(signature))}`;
+        const tokenEndpoints = [
+            "https://oauth2.googleapis.com/token",
+            "https://www.googleapis.com/oauth2/v4/token"
+        ];
+        const endpointErrors: string[] = [];
+        const encodedHeader = base64url(new TextEncoder().encode(JSON.stringify(header)));
 
-        const response = await fetch("https://oauth2.googleapis.com/token", {
-            method: "POST",
-            body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        });
+        for (const tokenEndpoint of tokenEndpoints) {
+            const claimSet = {
+                iss: normalizedEmail,
+                // Allow small client clock skew.
+                iat: time - 60,
+                exp: time + 3540,
+                scope: "https://www.googleapis.com/auth/cloud-platform",
+                aud: tokenEndpoint,
+            };
 
-        if (!response.ok) {
-            let errorText;
-            try {
-                errorText = JSON.stringify(await response.json());
-            } catch {
-                errorText = response.status.toString();
+            const encodedClaimSet = base64url(new TextEncoder().encode(JSON.stringify(claimSet)));
+
+            const signature = await crypto.subtle.sign(
+                "RSASSA-PKCS1-v1_5",
+                cryptokey,
+                new TextEncoder().encode(`${encodedHeader}.${encodedClaimSet}`)
+            );
+
+            const jwt = `${encodedHeader}.${encodedClaimSet}.${base64url(new Uint8Array(signature))}`;
+
+            const response = await fetch(tokenEndpoint, {
+                method: "POST",
+                body: new URLSearchParams({
+                    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    assertion: jwt
+                }).toString(),
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            });
+
+            if (!response.ok) {
+                let errorText = ""
+                try {
+                    errorText = JSON.stringify(await response.json())
+                } catch {
+                    try {
+                        errorText = await response.text()
+                    } catch {
+                        errorText = response.status.toString()
+                    }
+                }
+                endpointErrors.push(`${tokenEndpoint} -> ${response.status} ${errorText}`)
+                continue
             }
-            throw new Error(`Failed to refresh google access token: ${errorText}`);
+
+            const data = await response.json();
+            const token = data.access_token;
+
+            if (!token) {
+                endpointErrors.push(`${tokenEndpoint} -> 200 but no access_token`)
+                continue
+            }
+
+            const db2 = getDatabase()
+            db2.vertexAccessToken = token
+            db2.vertexAccessTokenExpires = Date.now() + 3500 * 1000
+            setDatabase(db2)
+            return token;
         }
 
-        const data = await response.json();
-        const token = data.access_token;
-
-        if (!token) {
-            throw new Error("No google access token in the response");
-        }
-
-        const db2 = getDatabase()
-        db2.vertexAccessToken = token
-        db2.vertexAccessTokenExpires = Date.now() + 3500 * 1000
-        setDatabase(db2)
-        return token;
+        throw new Error(`Failed to refresh google access token: ${endpointErrors.join(" | ")}`);
     }    
     
     if(arg.modelInfo.format === LLMFormat.VertexAIGemini){

@@ -89,12 +89,44 @@ await (async function() {
         return val;
     }
 
+    async function serializeResult(val) {
+        if (val instanceof Response) {
+            // Use ArrayBuffer instead of ReadableStream body for mobile compatibility
+            const buffer = await val.arrayBuffer();
+            return {
+                __type: 'CALLBACK_STREAMS',
+                __specialType: 'Response',
+                value: buffer,
+                init: {
+                    status: val.status,
+                    statusText: val.statusText,
+                    headers: Array.from(val.headers.entries())
+                }
+            };
+        }
+        if (
+            val instanceof ReadableStream ||
+            val instanceof WritableStream ||
+            val instanceof TransformStream
+        ) {
+            return {
+                __type: 'CALLBACK_STREAMS',
+                __specialType: 'none',
+                value: val
+            };
+        }
+        return val;
+    }
+
     function collectTransferables(obj, transferables = []) {
         if (!obj || typeof obj !== 'object') return transferables;
 
         if (obj instanceof ArrayBuffer ||
             obj instanceof MessagePort ||
             obj instanceof ImageBitmap ||
+            obj instanceof ReadableStream ||
+            obj instanceof WritableStream ||
+            obj instanceof TransformStream ||
             (typeof OffscreenCanvas !== 'undefined' && obj instanceof OffscreenCanvas)) {
             transferables.push(obj);
         }
@@ -185,7 +217,7 @@ await (async function() {
                     return a;
                 });
                 const result = await fn(...deserializedArgs);
-                response.result = result;
+                response.result = await serializeResult(result);
             } catch (e) {
                 response.error = e.message || "Guest callback error";
             }
@@ -213,6 +245,99 @@ await (async function() {
         }
     });
     window.Risuai = window.risuai;
+
+    // Route external fetches through host-side nativeFetch to avoid browser CORS failures
+    // in plugin iframes (notably custom provider endpoints).
+    const originalFetch = window.fetch ? window.fetch.bind(window) : null;
+    const normalizeHeaders = (sourceHeaders) => {
+        const headers = {};
+        if (!sourceHeaders) {
+            return headers;
+        }
+        if (sourceHeaders instanceof Headers) {
+            sourceHeaders.forEach((value, key) => {
+                headers[key] = value;
+            });
+            return headers;
+        }
+        if (Array.isArray(sourceHeaders)) {
+            for (const pair of sourceHeaders) {
+                if (Array.isArray(pair) && pair.length >= 2) {
+                    headers[String(pair[0])] = String(pair[1]);
+                }
+            }
+            return headers;
+        }
+        if (typeof sourceHeaders === 'object') {
+            for (const key of Object.keys(sourceHeaders)) {
+                headers[key] = String(sourceHeaders[key]);
+            }
+        }
+        return headers;
+    };
+
+    const isRequestLike = (value) => {
+        return (typeof Request !== 'undefined') && (value instanceof Request);
+    };
+
+    window.fetch = async (input, init = {}) => {
+        const requestLike = isRequestLike(input) ? input : null;
+        let requestUrl = '';
+        if (typeof input === 'string') {
+            requestUrl = input;
+        } else if (input instanceof URL) {
+            requestUrl = input.toString();
+        } else if (requestLike) {
+            requestUrl = requestLike.url;
+        } else if (input && typeof input === 'object' && 'url' in input) {
+            requestUrl = String(input.url);
+        } else {
+            requestUrl = String(input);
+        }
+
+        const isExternalHttp = /^https?:\\/\\//i.test(requestUrl);
+        if (!isExternalHttp) {
+            if (originalFetch) {
+                return originalFetch(input, init);
+            }
+            throw new Error('Fetch is not available');
+        }
+
+        const method = String(
+            init.method ||
+            (requestLike ? requestLike.method : undefined) ||
+            'GET'
+        ).toUpperCase();
+
+        const headers = Object.assign(
+            {},
+            normalizeHeaders(requestLike ? requestLike.headers : undefined),
+            normalizeHeaders(init.headers)
+        );
+
+        let body = init.body;
+        if (body === undefined && requestLike && method !== 'GET' && method !== 'HEAD') {
+            // Preserve payload for fetch(Request) calls so proxied APIs receive full JSON bodies.
+            body = await requestLike.clone().arrayBuffer();
+        }
+
+        if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+            body = body.toString();
+        } else if (typeof Blob !== 'undefined' && body instanceof Blob) {
+            body = await body.arrayBuffer();
+        } else if (typeof FormData !== 'undefined' && body instanceof FormData) {
+            // _fetch only transports string/bytes. Keep browser-native fetch for FormData.
+            if (originalFetch) {
+                return originalFetch(input, init);
+            }
+            throw new Error('Fetch is not available');
+        }
+        return window.risuai._fetch(requestUrl, {
+            method,
+            headers,
+            body,
+        });
+    };
 
     try {
         // Initialize cached properties
@@ -331,7 +456,7 @@ export class SandboxHost {
     }
 
 
-    private serialize(val: any): any {
+    private async serialize(val: any): Promise<any> {
         if (
             val &&
             (typeof val === 'object' || typeof val === 'function') &&
@@ -347,10 +472,13 @@ export class SandboxHost {
         }
 
         if(val instanceof Response) {
+            // Use ArrayBuffer instead of ReadableStream body for mobile compatibility
+            // (mobile browsers don't support transferring ReadableStream via postMessage)
+            const buffer = await val.arrayBuffer();
             return {
                 __type: 'CALLBACK_STREAMS',
                 __specialType: 'Response',
-                value: val.body,
+                value: buffer,
                 init: {
                     status: val.status,
                     statusText: val.statusText,
@@ -369,6 +497,17 @@ export class SandboxHost {
                 __specialType: 'none',
                 value: val
             };
+        }
+        return val;
+    }
+
+    private deserializeResult(val: any): any {
+        if (val && typeof val === 'object' && val.__type === 'CALLBACK_STREAMS') {
+            const specialType = val.__specialType;
+            if (specialType === 'Response') {
+                return new Response(val.value, val.init);
+            }
+            return val.value;
         }
         return val;
     }
@@ -462,7 +601,7 @@ export class SandboxHost {
                 const req = this.pendingCallbacks.get(data.reqId!);
                 if (req) {
                     if (data.error) req.reject(new Error(data.error));
-                    else req.resolve(data.result);
+                    else req.resolve(this.deserializeResult(data.result));
                     this.pendingCallbacks.delete(data.reqId!);
                 }
                 return;
@@ -496,15 +635,13 @@ export class SandboxHost {
                     }
 
 
-                    response.result = this.serialize(result);
+                    response.result = await this.serialize(result);
 
                 } catch (err: any) {
                     response.error = err.message || "Host execution error";
                 }
 
                 const transferables = this.collectTransferables(response);
-                console.log("Original request:", data);
-                console.log('Original response:', response, transferables);
                 try {
                     this.iframe.contentWindow?.postMessage(response, '*', transferables);                    
                 } catch (error) {

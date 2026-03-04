@@ -8,7 +8,7 @@ import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
 import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
 import { language } from "src/lang";
-import { checkCharOrder, forageStorage, getFetchLogs } from "src/ts/globalApi.svelte";
+import { checkCharOrder, fetchNative, forageStorage, getFetchLogs } from "src/ts/globalApi.svelte";
 import { isNodeServer, isTauri } from "src/ts/platform";
 import { get } from "svelte/store";
 import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
@@ -968,6 +968,23 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
         checkCharOrder: checkCharOrder,
         requestPluginPermission: (permission:string) => {
             return getPluginPermission(plugin.name, permission as any);
+        },
+        // Internal bridge for plugin runtime fetch proxying.
+        _fetch: async (url: string, arg: {
+            method?: 'POST' | 'GET' | 'PUT' | 'DELETE',
+            headers?: Record<string, string>,
+            body?: string | Uint8Array | ArrayBuffer
+        } = {}) => {
+            const method = (arg.method ?? 'GET').toUpperCase() as 'POST' | 'GET' | 'PUT' | 'DELETE'
+            let body = arg.body
+            if ((method === 'POST' || method === 'PUT') && body === undefined) {
+                body = ''
+            }
+            return fetchNative(url, {
+                method,
+                headers: arg.headers ?? {},
+                body,
+            })
         },
         //Internal use APIs
         _getOldKeys: () => {

@@ -17,6 +17,10 @@ import { applyParameters, setObjectValue } from '../shared'
 
 import type { Contents, OpenAIChatExtra, OpenAIChatFull, ResponseInputItem, ResponseItem, ResponseOutputItem, ToolCall } from './types'
 
+// 4xx errors are non-retryable except 408 (timeout) and 429 (rate limit)
+const isClientErrorNoRetry = (status: number) =>
+    status >= 400 && status < 500 && status !== 408 && status !== 429
+
 export async function requestOpenAI(arg:RequestDataArgumentExtended):Promise<requestDataResponse>{
     let formatedChat:OpenAIChatExtra[] = []
     const formated = arg.formated
@@ -549,16 +553,19 @@ export async function requestOpenAI(arg:RequestDataArgumentExtended):Promise<req
         })
 
         if(da.status !== 200){
+            const noRetry = isClientErrorNoRetry(da.status)
             return {
                 type: "fail",
-                result: await textifyReadableStream(da.body)
+                result: await textifyReadableStream(da.body),
+                noRetry
             }
         }
 
         if (!da.headers.get('Content-Type').includes('text/event-stream')){
             return {
                 type: "fail",
-                result: await textifyReadableStream(da.body)
+                result: await textifyReadableStream(da.body),
+                noRetry: true
             }
         }
 
@@ -720,6 +727,7 @@ async function requestHTTPOpenAI(replacerURL:string,body:any, headers:Record<str
     }
 
     const dat = res.data as any
+    const statusNoRetry = isClientErrorNoRetry(res.status)
 
     if(res.ok){
         try {
@@ -880,13 +888,15 @@ async function requestHTTPOpenAI(replacerURL:string,body:any, headers:Record<str
     if(dat.error && dat.error.message){                    
         return {
             type: 'fail',
-            result: (language.errors.httpError + `${dat.error.message}`)
+            result: (language.errors.httpError + `${dat.error.message}`),
+            noRetry: statusNoRetry
         }
     }
 
     return {
         type: 'fail',
-        result: (language.errors.httpError + `${JSON.stringify(res.data)}`)
+        result: (language.errors.httpError + `${JSON.stringify(res.data)}`),
+        noRetry: statusNoRetry
     }
 }
 

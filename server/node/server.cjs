@@ -1,10 +1,41 @@
 const express = require('express');
 const app = express();
 const path = require('path');
+const compression = require('compression');
 const htmlparser = require('node-html-parser');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const fs = require('fs/promises')
 const crypto = require('crypto')
+
+const shouldSkipCompression = (req, res) => {
+    const pathName = req.path || '';
+    if (pathName === '/proxy' || pathName === '/proxy2' || pathName.startsWith('/hub-proxy')) {
+        return true;
+    }
+
+    const accept = String(req.headers.accept || '').toLowerCase();
+    if (accept.includes('text/event-stream')) {
+        return true;
+    }
+
+    const contentType = String(res.getHeader('Content-Type') || '').toLowerCase();
+    if (contentType.includes('text/event-stream')) {
+        return true;
+    }
+
+    return false;
+};
+
+app.use(compression({
+    threshold: 1024,
+    filter: (req, res) => {
+        if (shouldSkipCompression(req, res)) {
+            return false;
+        }
+        return compression.filter(req, res);
+    }
+}));
+
 app.use(express.static(path.join(process.cwd(), 'dist'), {index: false}));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
@@ -84,13 +115,36 @@ const reverseProxyFunc = async (req, res, next) => {
             header['authorization'] = `Bearer ${authCode}`
         }
     }
+    const contentType = String(header['content-type'] || header['Content-Type'] || '').toLowerCase();
+    let forwardBody = undefined;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        if (Buffer.isBuffer(req.body) || req.body instanceof Uint8Array) {
+            forwardBody = req.body;
+        }
+        else if (typeof req.body === 'string') {
+            forwardBody = req.body;
+        }
+        else if (req.body !== undefined && req.body !== null) {
+            if (contentType.includes('application/x-www-form-urlencoded')) {
+                forwardBody = new URLSearchParams(req.body).toString();
+            }
+            else if (contentType.includes('application/json')) {
+                forwardBody = JSON.stringify(req.body);
+            }
+            else {
+                // Fallback for parsed objects from legacy wrapper content-types.
+                forwardBody = JSON.stringify(req.body);
+            }
+        }
+    }
+
     let originalResponse;
     try {
         // make request to original server
         originalResponse = await fetch(urlParam, {
             method: req.method,
             headers: header,
-            body: JSON.stringify(req.body)
+            body: forwardBody
         });
         // get response body as stream
         const originalBody = originalResponse.body;

@@ -1466,7 +1466,9 @@ export async function fetchNative(url: string, arg: {
     }
 
     const db = getDatabase()
-    let throughProxy = (!isTauri) && (!isNodeServer) && (!db.usePlainFetch)
+    // In web runtimes, route native fetch through proxy unless explicitly using plain fetch.
+    // This avoids direct browser-to-provider calls (e.g. Copilot) that can fail by CORS/network policy.
+    let throughProxy = (!isTauri) && (!db.usePlainFetch)
     let fetchLogIndex = addFetchLog({
         body: new TextDecoder().decode(realBody),
         headers: arg.headers,
@@ -1580,20 +1582,25 @@ export async function fetchNative(url: string, arg: {
 
     }
     else if (throughProxy) {
+        const proxyURL = isNodeServer ? '/proxy2' : `${hubURL}/proxy2`
 
-        const r = await fetch(hubURL + `/proxy2`, {
+        const r = await fetch(proxyURL, {
             body: realBody as any,
             headers: arg.useRisuTk ? {
                 "risu-header": encodeURIComponent(JSON.stringify(headers)),
                 "risu-url": encodeURIComponent(url),
-                "Content-Type": "application/json",
+                // Wrapper request to /proxy2: keep payload as raw bytes.
+                // Original upstream content-type is preserved inside risu-header.
+                "Content-Type": "application/octet-stream",
                 "x-risu-tk": "use",
                 ...(isNodeServer && localStorage.getItem('risuauth') ? { "risu-auth": localStorage.getItem('risuauth') } : {}),
                 ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
             } : {
                 "risu-header": encodeURIComponent(JSON.stringify(headers)),
                 "risu-url": encodeURIComponent(url),
-                "Content-Type": "application/json",
+                // Wrapper request to /proxy2: keep payload as raw bytes.
+                // Original upstream content-type is preserved inside risu-header.
+                "Content-Type": "application/octet-stream",
                 ...(isNodeServer && localStorage.getItem('risuauth') ? { "risu-auth": localStorage.getItem('risuauth') } : {}),
                 ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
             },
