@@ -273,6 +273,7 @@ export async function loadAsset(id: string) {
 }
 
 let lastSave = ''
+let lastBackupTime = 0
 export let saving = $state({
     state: false
 })
@@ -426,15 +427,22 @@ export async function saveDb() {
                 continue
             }
             const dbData = new Uint8Array(encoded)
+            const now = Date.now()
             if (isTauri) {
                 await writeFile('database/database.bin', dbData, { baseDir: BaseDirectory.AppData });
-                await writeFile(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData, { baseDir: BaseDirectory.AppData });
+                if (now - lastBackupTime >= 10000) {
+                    await writeFile(`database/dbbackup-${(now / 100).toFixed()}.bin`, dbData, { baseDir: BaseDirectory.AppData });
+                    lastBackupTime = now
+                }
             }
             else {
 
                 await forageStorage.setItem('database/database.bin', dbData)
                 if (!forageStorage.isAccount) {
-                    await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData)
+                    if (now - lastBackupTime >= 10000) {
+                        await forageStorage.setItem(`database/dbbackup-${(now / 100).toFixed()}.bin`, dbData)
+                        lastBackupTime = now
+                    }
                 }
                 if (forageStorage.isAccount) {
                     await sleep(3000)
@@ -461,8 +469,54 @@ export async function saveDb() {
 }
 
 /**
+ * Selects which backup timestamps to keep based on tiered retention policy.
+ * - Recent (<10 min): keep newest 5
+ * - Hourly (10 min – 24 h): keep 1 per hour
+ * - Daily (1 – 7 days): keep 1 per day
+ * - Older (>7 days): delete
+ *
+ * @param timestamps - decisecond timestamps (Date.now()/100), sorted descending
+ * @returns Set of timestamps to keep
+ */
+function selectBackupsToKeep(timestamps: number[]): Set<number> {
+    const keep = new Set<number>()
+    const nowDs = Date.now() / 100  // deciseconds
+    const TEN_MIN = 10 * 60 * 10   // 6000 ds
+    const ONE_DAY = 24 * 60 * 60 * 10  // 864000 ds
+    const SEVEN_DAYS = 7 * ONE_DAY
+
+    let recentCount = 0
+    const usedHourBuckets = new Set<number>()
+    const usedDayBuckets = new Set<number>()
+
+    for (const ts of timestamps) {
+        const age = nowDs - ts
+        if (age < TEN_MIN) {
+            if (recentCount < 5) {
+                keep.add(ts)
+                recentCount++
+            }
+        } else if (age < ONE_DAY) {
+            const hourBucket = Math.floor(age / (60 * 60 * 10))
+            if (!usedHourBuckets.has(hourBucket)) {
+                usedHourBuckets.add(hourBucket)
+                keep.add(ts)
+            }
+        } else if (age < SEVEN_DAYS) {
+            const dayBucket = Math.floor(age / ONE_DAY)
+            if (!usedDayBuckets.has(dayBucket)) {
+                usedDayBuckets.add(dayBucket)
+                keep.add(ts)
+            }
+        }
+        // older than 7 days: not kept
+    }
+    return keep
+}
+
+/**
  * Retrieves the database backups.
- * 
+ *
  * @returns {Promise<number[]>} - A promise that resolves to an array of backup timestamps.
  */
 export async function getDbBackups() {
@@ -481,11 +535,13 @@ export async function getDbBackups() {
             }
         }
         backups.sort((a, b) => b - a)
-        while (backups.length > 20) {
-            const last = backups.pop()
-            await remove(`database/dbbackup-${last}.bin`, { baseDir: BaseDirectory.AppData })
-        }
-        return backups
+        const keepSet = selectBackupsToKeep(backups)
+        await Promise.all(
+            backups
+                .filter(ts => !keepSet.has(ts))
+                .map(ts => remove(`database/dbbackup-${ts}.bin`, { baseDir: BaseDirectory.AppData }))
+        )
+        return backups.filter(ts => keepSet.has(ts))
     }
     else {
         const keys = await forageStorage.keys()
@@ -495,11 +551,13 @@ export async function getDbBackups() {
             .map(key => parseInt(key.slice(18, -4)))
             .sort((a, b) => b - a);
 
-        while (backups.length > 20) {
-            const last = backups.pop()
-            await forageStorage.removeItem(`database/dbbackup-${last}.bin`)
-        }
-        return backups
+        const keepSet = selectBackupsToKeep(backups)
+        await Promise.all(
+            backups
+                .filter(ts => !keepSet.has(ts))
+                .map(ts => forageStorage.removeItem(`database/dbbackup-${ts}.bin`))
+        )
+        return backups.filter(ts => keepSet.has(ts))
     }
 }
 
