@@ -123,10 +123,27 @@ export class AutoStorage{
                 this.isAccount = true
                 return
             }
-            if(isNodeServer){
-                console.log("using node storage")
-                this.realStorage = new NodeStorage()
-                return
+            if(isNodeServer || localStorage.getItem('risuauth')){
+                // risuauth in localStorage means user has set up NodeServer auth,
+                // even if __NODE__ wasn't injected (e.g. incognito mode with cached HTML)
+                try {
+                    const res = await fetch('/api/password', {
+                        headers: { 'risu-auth': localStorage.getItem('risuauth') ?? '' }
+                    })
+                    const data = await res.json()
+                    if(data.status === 'ok' || data.status === 'unset' || data.status === 'incorrect'){
+                        console.log("using node storage (detected via risuauth)")
+                        this.realStorage = new NodeStorage()
+                        return
+                    }
+                } catch(e) {
+                    // /api/password not reachable, not a NodeServer
+                    if(isNodeServer){
+                        console.log("using node storage")
+                        this.realStorage = new NodeStorage()
+                        return
+                    }
+                }
             }
             else if(window.navigator?.storage?.getDirectory &&
                     FileSystemFileHandle?.prototype?.createWritable &&

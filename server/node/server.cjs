@@ -76,6 +76,7 @@ app.get('/', async (req, res, next) => {
         const head = root.querySelector('head')
         head.innerHTML = `<script>globalThis.__NODE__ = true</script>` + head.innerHTML
         
+        res.setHeader('Cache-Control', 'no-store')
         res.send(root.toString())
     } catch (error) {
         console.log(error)
