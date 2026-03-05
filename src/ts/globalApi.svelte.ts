@@ -93,7 +93,7 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
 }
 
 let fileCache: {
-    origin: string[], res: (Uint8Array | 'loading' | 'done')[]
+    origin: string[], res: (Uint8Array | 'loading' | 'done' | 'error' | 'error_final')[]
 } = {
     origin: [],
     res: []
@@ -154,7 +154,8 @@ export async function getFileSrc(loc: string) {
                     }
                     return "/sw/img/" + encoded
                 } catch (error) {
-
+                    fileCache.res[ind] = 'error'
+                    return ''
                 }
             }
             else {
@@ -163,6 +164,28 @@ export async function getFileSrc(loc: string) {
                     while (fileCache.res[ind] === 'loading') {
                         await sleep(10)
                     }
+                }
+                const cur = fileCache.res[ind]
+                if (cur === 'error') {
+                    // First waiter to see 'error' resets to 'loading' and retries;
+                    // concurrent waiters will re-enter the while loop and await the result.
+                    fileCache.res[ind] = 'loading'
+                    try {
+                        const hasCache: boolean = (await (await fetch("/sw/check/" + encoded)).json()).able
+                        if (!hasCache) {
+                            const f2: Uint8Array = await forageStorage.getItem(loc) as unknown as Uint8Array
+                            await fetch("/sw/register/" + encoded, {
+                                method: "POST",
+                                body: f2 as any
+                            })
+                        }
+                        fileCache.res[ind] = 'done'
+                    } catch {
+                        fileCache.res[ind] = 'error_final'
+                        return ''
+                    }
+                } else if (cur === 'error_final') {
+                    return ''
                 }
                 return "/sw/img/" + encoded
             }
