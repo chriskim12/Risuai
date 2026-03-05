@@ -136,7 +136,6 @@
     };
 
     onDestroy(() => {
-        console.log('Unmounting Chats');
         hashes.clear();
         mountInstances.forEach((inst) => {
             unmount(inst);
@@ -167,14 +166,13 @@
     let previousChatRoomId: string | null = null;
 
     $effect(() => {
-        console.log('Updating Chats');
         void $ReloadChatPointer; // Make $effect track ReloadChatPointer changes
         const wasAtBottom = checkIfAtBottom();
         updateChatBody()
-        
+
         const currentChatRoomId = getCurrentChatRoomId();
         const isSameChat = currentChatRoomId === previousChatRoomId;
-        
+
         // Only auto-scroll if it's the same chat and new messages were added
         if(isSameChat && messages.length > previousLength){
             const lastMsg = messages[messages.length - 1];

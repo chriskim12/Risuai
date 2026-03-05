@@ -11,8 +11,6 @@
     import { DBState, ReloadChatPointer, CurrentTriggerIdStore, popupStore } from 'src/ts/stores.svelte'
     import { ConnectionOpenStore } from "src/ts/sync/multiuser"
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util"
-    import { onDestroy, onMount } from "svelte"
-    import { type Unsubscriber } from "svelte/store"
     import { v4 as uuidv4, v4 } from 'uuid'
     import { language } from "../../lang"
     import { alertClear, alertConfirm, alertInput, alertNormal, alertRequestData, alertWait } from "../../ts/alert"
@@ -151,20 +149,9 @@
     let blankMessage = $derived((message === '{{none}}' || message === '{{blank}}' || message === '') && idx === -1 || isComment)
 
     $effect.pre(() => {
+        void $ReloadGUIPointer;
         displaya(message)
     });
-
-    const unsubscribers:Unsubscriber[] = []
-
-    onMount(()=>{
-        unsubscribers.push(ReloadGUIPointer.subscribe((v) => {
-            displaya(message)
-        }))
-    })
-
-    onDestroy(()=>{
-        unsubscribers.forEach(u => u())
-    })
 
     function RenderGUIHtml(html:string){
         try {
@@ -364,7 +351,6 @@
             style:font-size="{0.875 * (DBState.db.zoomsize / 100)}rem"
             style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"
         >
-            {#key `${totalLengthPointer}|${chatReloadPointer}`}
                 <ChatBody
                     {character}
                     {firstMessage}
@@ -372,6 +358,7 @@
                     {msgDisplay}
                     {name}
                     {bodyRoot}
+                    reloadPointer={chatReloadPointer}
                     modelShortName={
                         messageGenerationInfo ? getModelInfo(messageGenerationInfo?.model).shortName : ''
                     }
@@ -379,7 +366,6 @@
                     bind:translated={translated}
                     bind:translating={translating}
                     bind:retranslate={retranslate} />
-            {/key}
             {#if idx >= 0 && !editMode && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
                 <PartialEditController
                     messageData={message}

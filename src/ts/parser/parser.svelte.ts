@@ -837,9 +837,6 @@ export function addMetadataToElement(data:string, modelShortName:string){
         }
     }
 
-    console.log('Encoded metadata:', encodedMetaCode.length, 'characters')
-    console.log('This requires at least', Math.ceil(encodedMetaCode.length / 32), '<p> tags to store')
-
     let d =  data.replace(/\<p\>/g, (v) => {
         return '<p>' + encodedMetaCode
     })

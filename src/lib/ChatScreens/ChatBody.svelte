@@ -21,6 +21,7 @@
         retranslate: boolean
         bodyRoot?: HTMLElement|null
         modelShortName: string
+        reloadPointer?: number
     }
 
     let {
@@ -34,6 +35,7 @@
         retranslate = $bindable(false),
         bodyRoot,
         modelShortName = '',
+        reloadPointer = 0,
     }: Props =  $props()
 
     // svelte-ignore non_reactive_update
@@ -174,7 +176,6 @@
             imgs.forEach(async (img) => {
                 const name = img.getAttribute('src')?.toLocaleLowerCase() || ''
 
-                console.log(name)
                 if(
                     name.length > 200 ||
                     name.includes(':')
@@ -185,7 +186,6 @@
                 
                 const assets = getModuleAssets().concat(getCurrentCharacter().additionalAssets ?? [])
                 const styl = getCurrentCharacter().prebuiltAssetStyle
-                console.log('Checking image:', name, 'Assets:', assets)
                 const foundAsset = assets.find(asset => asset[0].toLocaleLowerCase() === name)
                 if(foundAsset){
                     img.classList.add('root-loaded-image')
@@ -242,11 +242,12 @@
         }
     }
 
-    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx))
+    let markParsingResult = $derived.by(() => {
+        void reloadPointer; // ensure reloadPointer tracked as dependency
+        return markParsing(msgDisplay, character, idx);
+    })
 
     $effect(() => {
-        markParsingResult
-        checkImg()
         markParsingResult.then(checkImg)
     })
 </script>

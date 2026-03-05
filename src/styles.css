@@ -506,6 +506,11 @@ body {
   overflow-wrap: anywhere;
 }
 
+.chat-message-container {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
+}
+
 .chat-message-container .dyna-icon {
   display: none;
 }
