@@ -4,6 +4,7 @@ import { getImageType } from "src/ts/media";
 import { getDatabase } from "../../storage/database.svelte";
 import { getModelInfo, LLMFlags } from "src/ts/model/modellist";
 import { asBuffer } from "../../util";
+import { inlayTokenRegex, type InlayTokenKind } from "../../util/inlayTokens";
 
 export type InlayAsset = {
     data: string | Blob
@@ -32,21 +33,154 @@ const inlayStorage = localforage.createInstance({
     storeName: 'inlay'
 })
 
+let globalApiModulePromise: Promise<typeof import("../../globalApi.svelte")> | null = null
+
+function loadGlobalApiModule() {
+    globalApiModulePromise ??= import("../../globalApi.svelte")
+    return globalApiModulePromise
+}
+
+function cloneInlayTokenRegex() {
+    return new RegExp(inlayTokenRegex.source, inlayTokenRegex.flags)
+}
+
+function getAssetTypeFromExt(ext: string): InlayAsset['type'] | null {
+    const normalized = ext.toLowerCase()
+    if (inlayImageExts.includes(normalized)) {
+        return 'image'
+    }
+    if (inlayAudioExts.includes(normalized)) {
+        return 'audio'
+    }
+    if (inlayVideoExts.includes(normalized)) {
+        return 'video'
+    }
+    return null
+}
+
+function getMimeType(type: InlayAsset['type'], ext: string) {
+    const normalized = ext.toLowerCase()
+    if (type === 'image') {
+        return normalized === 'jpg' ? 'image/jpeg' : `image/${normalized}`
+    }
+    if (type === 'audio') {
+        return `audio/${normalized}`
+    }
+    return `video/${normalized}`
+}
+
+function getFileExtension(name: string) {
+    return name.split('.').at(-1)?.toLowerCase() ?? ''
+}
+
+function getFileName(path: string) {
+    return path.split('/').at(-1) ?? path
+}
+
+function getPngFileName(name?: string) {
+    const baseName = name?.split('/').at(-1)?.replace(/\.[^.]+$/, '') || v4()
+    return `${baseName}.png`
+}
+
+async function waitForImage(imgObj: HTMLImageElement) {
+    if (imgObj.complete && (imgObj.naturalWidth > 0 || imgObj.width > 0)) {
+        return
+    }
+
+    await new Promise<void>((resolve, reject) => {
+        imgObj.onload = () => resolve()
+        imgObj.onerror = () => reject(new Error('Failed to load inlay image'))
+    })
+}
+
+async function drawInlayImage(imgObj: HTMLImageElement) {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+        throw new Error('Failed to get canvas context for inlay image')
+    }
+
+    await waitForImage(imgObj)
+
+    let drawHeight = imgObj.naturalHeight || imgObj.height
+    let drawWidth = imgObj.naturalWidth || imgObj.width
+
+    const maxPixels = 1024 * 1024
+    const currentPixels = drawHeight * drawWidth
+
+    if (currentPixels > maxPixels) {
+        const scaleFactor = Math.sqrt(maxPixels / currentPixels)
+        drawWidth = Math.floor(drawWidth * scaleFactor)
+        drawHeight = Math.floor(drawHeight * scaleFactor)
+    }
+
+    canvas.width = drawWidth
+    canvas.height = drawHeight
+    ctx.drawImage(imgObj, 0, 0, drawWidth, drawHeight)
+
+    const imageBlob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
+    if (!imageBlob) {
+        throw new Error('Failed to encode inlay image as PNG')
+    }
+
+    return {
+        imageBlob,
+        drawHeight,
+        drawWidth,
+    }
+}
+
+async function getPersistentInlayAssetBlob(id: string): Promise<InlayAsset | null> {
+    const ext = getFileExtension(id)
+    const type = getAssetTypeFromExt(ext)
+    if (!type) {
+        return null
+    }
+
+    try {
+        const { readImage } = await loadGlobalApiModule()
+        const data = await readImage(id)
+        if (!data) {
+            return null
+        }
+
+        return {
+            data: new Blob([asBuffer(data)], { type: getMimeType(type, ext) }),
+            ext,
+            height: 0,
+            width: 0,
+            name: getFileName(id),
+            type,
+        }
+    } catch (error) {
+        console.error('Failed to read persistent inlay asset:', error)
+        return null
+    }
+}
+
+export function isPersistentInlayRef(id: string) {
+    return id.startsWith('assets/')
+}
+
 export async function postInlayAsset(img:{
     name:string,
     data:Uint8Array
 }){
 
-    const extention = img.name.split('.').at(-1)
+    const extention = getFileExtension(img.name)
     const imgObj = new Image()
 
     if(inlayImageExts.includes(extention)){
-        imgObj.src = URL.createObjectURL(new Blob([asBuffer(img.data)], {type: `image/${extention}`}))
-
-        return await writeInlayImage(imgObj, {
-            name: img.name,
-            ext: extention
-        })
+        const objectUrl = URL.createObjectURL(new Blob([asBuffer(img.data)], {type: `image/${extention}`}))
+        try {
+            imgObj.src = objectUrl
+            return await writePersistentInlayImage(imgObj, {
+                name: img.name,
+                ext: extention
+            })
+        } finally {
+            URL.revokeObjectURL(objectUrl)
+        }
     }
 
     if(inlayAudioExts.includes(extention)){
@@ -81,33 +215,7 @@ export async function postInlayAsset(img:{
 }
 
 export async function writeInlayImage(imgObj:HTMLImageElement, arg:{name?:string, ext?:string, id?:string} = {}) {
-
-    let drawHeight = 0
-    let drawWidth = 0
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')
-    await new Promise((resolve) => {
-        imgObj.onload = () => {
-            drawHeight = imgObj.height
-            drawWidth = imgObj.width
-
-            //resize image to fit inlay, if total pixels exceed 1024*1024
-            const maxPixels = 1024 * 1024
-            const currentPixels = drawHeight * drawWidth
-            
-            if(currentPixels > maxPixels){
-                const scaleFactor = Math.sqrt(maxPixels / currentPixels)
-                drawWidth = Math.floor(drawWidth * scaleFactor)
-                drawHeight = Math.floor(drawHeight * scaleFactor)
-            }
-
-            canvas.width = drawWidth
-            canvas.height = drawHeight
-            ctx.drawImage(imgObj, 0, 0, drawWidth, drawHeight)
-            resolve(null)
-        }
-    })
-    const imageBlob = await new Promise<Blob>(resolve => canvas.toBlob(resolve, 'image/png'));
+    const { imageBlob, drawHeight, drawWidth } = await drawInlayImage(imgObj)
     // Store as base64 string — iOS/WebKit IndexedDB cannot serialize Blob objects
     const imageData = await blobToBase64(imageBlob);
 
@@ -123,6 +231,13 @@ export async function writeInlayImage(imgObj:HTMLImageElement, arg:{name?:string
     })
 
     return `${imgid}`
+}
+
+export async function writePersistentInlayImage(imgObj:HTMLImageElement, arg:{name?:string, ext?:string} = {}) {
+    const { imageBlob } = await drawInlayImage(imgObj)
+    const imageBuffer = new Uint8Array(await imageBlob.arrayBuffer())
+    const { saveAsset } = await loadGlobalApiModule()
+    return await saveAsset(imageBuffer, '', getPngFileName(arg.name))
 }
 
 function base64ToBlob(b64: string): Blob {
@@ -152,7 +267,9 @@ function blobToBase64(blob: Blob): Promise<string> {
 
 // Returns with base64 data URI
 export async function getInlayAsset(id: string){
-    const img = await inlayStorage.getItem<InlayAsset | null>(id)
+    const img = isPersistentInlayRef(id)
+        ? await getPersistentInlayAssetBlob(id)
+        : await inlayStorage.getItem<InlayAsset | null>(id)
     if(img === null){
         return null
     }
@@ -169,7 +286,9 @@ export async function getInlayAsset(id: string){
 
 // Returns with Blob
 export async function getInlayAssetBlob(id: string){
-    const img = await inlayStorage.getItem<InlayAsset | null>(id)
+    const img = isPersistentInlayRef(id)
+        ? await getPersistentInlayAssetBlob(id)
+        : await inlayStorage.getItem<InlayAsset | null>(id)
     if(img === null){
         return null
     }
@@ -182,6 +301,64 @@ export async function getInlayAssetBlob(id: string){
     }
 
     return { ...img, data }
+}
+
+export async function migrateLegacyImageInlayRefs(text: string): Promise<{ text: string, changed: boolean }> {
+    if (!text.includes('{{inlay')) {
+        return { text, changed: false }
+    }
+
+    const matches = [...text.matchAll(cloneInlayTokenRegex())]
+    if (matches.length === 0) {
+        return { text, changed: false }
+    }
+
+    const migrated = new Map<string, string | null>()
+    let changed = false
+    let cursor = 0
+    let migratedText = ''
+
+    for (const match of matches) {
+        const fullMatch = match[0]
+        const tokenKind = match[1] as InlayTokenKind
+        const ref = match[2]
+        const start = match.index ?? 0
+        migratedText += text.slice(cursor, start)
+        cursor = start + fullMatch.length
+
+        if (isPersistentInlayRef(ref)) {
+            migratedText += fullMatch
+            continue
+        }
+
+        if (!migrated.has(ref)) {
+            let nextRef: string | null = null
+            const asset = await getInlayAssetBlob(ref)
+            if (asset?.type === 'image') {
+                const image = new Image()
+                const objectUrl = URL.createObjectURL(asset.data as Blob)
+                try {
+                    image.src = objectUrl
+                    nextRef = await writePersistentInlayImage(image, { name: asset.name })
+                } finally {
+                    URL.revokeObjectURL(objectUrl)
+                }
+            }
+            migrated.set(ref, nextRef)
+        }
+
+        const nextRef = migrated.get(ref)
+        if (!nextRef) {
+            migratedText += fullMatch
+            continue
+        }
+
+        changed = true
+        migratedText += `{{${tokenKind}::${nextRef}}}`
+    }
+
+    migratedText += text.slice(cursor)
+    return { text: migratedText, changed }
 }
 
 export async function listInlayAssets(): Promise<[id: string, InlayAsset][]> {

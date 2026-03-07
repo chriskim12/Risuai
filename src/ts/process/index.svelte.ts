@@ -19,7 +19,7 @@ import { groupOrder } from "./group";
 import { runTrigger } from "./triggers";
 import { HypaProcesser } from "./memory/hypamemory";
 import { additionalInformations } from "./embedding/addinfo";
-import { getInlayAsset } from "./files/inlays";
+import { getInlayAsset, migrateLegacyImageInlayRefs } from "./files/inlays";
 import { getGenerationModelString } from "./models/modelString";
 import { connectionOpen, peerRevertChat, peerSafeCheck, peerSync } from "../sync/multiuser";
 import { runInlayScreen } from "./inlayScreen";
@@ -32,6 +32,7 @@ import { getModelInfo, LLMFlags } from "../model/modellist";
 import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
+import { getInlayTokenPayload } from "../util/inlayTokens";
 
 export interface OpenAIChat{
     role: 'system'|'user'|'assistant'|'function'
@@ -814,6 +815,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     let index = 0
     for(const msg of ms){
+        if(!currentChat.isStreaming && msg.data.includes('{{inlay')){
+            const migrated = await migrateLegacyImageInlayRefs(msg.data)
+            if(migrated.changed){
+                msg.data = migrated.text
+            }
+        }
+
         let formatedChat = (await processScriptFull(nowChatroom,risuChatParser(msg.data, {chara: currentChar, role: msg.role}), 'editprocess', index, {
             chatRole: msg.role,
         })).data
@@ -858,7 +866,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         const modelinfo = getModelInfo(DBState.db.aiModel)
         if(inlays.length > 0){
             for(const inlay of inlays){
-                const inlayName = inlay.replace('{{inlayed::', '').replace('{{inlay::', '').replace('}}', '')
+                const inlayName = getInlayTokenPayload(inlay) ?? inlay
                 const inlayData = await getInlayAsset(inlayName)
                 if(inlayData?.type === 'image'){
                     if(modelinfo.flags.includes(LLMFlags.hasImageInput)){

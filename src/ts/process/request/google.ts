@@ -3,7 +3,7 @@ import { LLMFlags, LLMFormat } from "src/ts/model/modellist"
 import { getDatabase, setDatabase } from "src/ts/storage/database.svelte"
 import { simplifySchema } from "src/ts/util"
 import { v4 } from "uuid"
-import { setInlayAsset, writeInlayImage } from "../files/inlays"
+import { setInlayAsset, writePersistentInlayImage } from "../files/inlays"
 import { extractJSON, getGeneralJSONSchema } from "../templates/jsonSchema"
 import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp"
 import { alertError } from "src/ts/alert";
@@ -744,14 +744,10 @@ async function requestGoogle(url:string, body:any, headers:{[key:string]:string}
 
                 if(part.inlineData){
                     const imgHTML = new Image()
-                    const id = crypto.randomUUID()
-
                     if(part.inlineData.mimeType.startsWith('image/')){
 
                         imgHTML.src = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
-                        await writeInlayImage(imgHTML, {
-                            id: id
-                        })
+                        const id = await writePersistentInlayImage(imgHTML)
                         rDatas.push({
                             text: `{{inlayeddata::${id}}}`
                         })

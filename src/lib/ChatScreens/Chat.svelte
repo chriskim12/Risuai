@@ -4,6 +4,7 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme"
     import { longpress } from "src/ts/gui/longtouch"
     import { getModelInfo } from "src/ts/model/modellist"
+    import { migrateLegacyImageInlayRefs } from "src/ts/process/files/inlays"
     import { runLuaButtonTrigger } from 'src/ts/process/scriptings'
     import { risuChatParser } from "src/ts/process/scripts"
     import { runTrigger } from 'src/ts/process/triggers'
@@ -137,6 +138,35 @@
         msgDisplay = risuChatParser(message, {chara: name, chatID: idx, rmVar: true, visualize: true, cbsConditions: getCbsCondition()})
     }
 
+    async function migrateMessageInlays(rawMessage: string) {
+        if (idx < 0 || isComment || !rawMessage.includes('{{inlay')) {
+            return
+        }
+
+        const currentCharacter = DBState.db.characters[selIdState.selId]
+        const currentChat = currentCharacter?.chats?.[currentCharacter.chatPage]
+        const currentMessage = currentChat?.message?.[idx]
+        if (!currentChat || currentChat.isStreaming || !currentMessage || currentMessage.data !== rawMessage) {
+            return
+        }
+
+        const migrated = await migrateLegacyImageInlayRefs(rawMessage)
+        if (!migrated.changed) {
+            return
+        }
+
+        const latestCharacter = DBState.db.characters[selIdState.selId]
+        const latestChat = latestCharacter?.chats?.[latestCharacter.chatPage]
+        const latestMessage = latestChat?.message?.[idx]
+        if (!latestChat || latestChat.isStreaming || !latestMessage || latestMessage.data !== rawMessage) {
+            return
+        }
+
+        latestMessage.data = migrated.text
+        message = migrated.text
+        displaya(migrated.text)
+    }
+
     const setStatusMessage = (message:string, timeout:number = 0)=>{
         statusMessage = message
         if(timeout === 0) return
@@ -152,6 +182,10 @@
         void $ReloadGUIPointer;
         displaya(message)
     });
+
+    $effect(() => {
+        void migrateMessageInlays(message)
+    })
 
     function RenderGUIHtml(html:string){
         try {

@@ -1,4 +1,3 @@
-import { asBuffer } from 'src/ts/util';
 import { getChatVar, getGlobalChatVar, setChatVar } from "../parser/chatVar.svelte";
 import { hasher, type simpleCharacterArgument, risuChatParser } from "../parser/parser.svelte";
 import { LuaEngine, LuaFactory } from "wasmoon";
@@ -8,7 +7,7 @@ import { ReloadChatPointer, ReloadGUIPointer, selectedCharID } from "../stores.s
 import { alertSelect, alertError, alertInput, alertNormal, alertConfirm } from "../alert";
 import { HypaProcesser } from "./memory/hypamemory";
 import { generateAIImage } from "./stableDiff";
-import { writeInlayImage, getInlayAsset } from "./files/inlays";
+import { getInlayAsset, postInlayAsset, writePersistentInlayImage } from "./files/inlays";
 import type { OpenAIChat, MultiModal } from "./index.svelte";
 import { requestChatData } from "./request/request";
 import { v4 } from "uuid";
@@ -370,7 +369,7 @@ export async function runScripted(code:string, arg:{
                 }
                 const imgHTML = new Image()
                 imgHTML.src = gen
-                const inlay = await writeInlayImage(imgHTML)
+                const inlay = await writePersistentInlayImage(imgHTML)
                 return `{{inlay::${inlay}}}`
             })
 
@@ -389,19 +388,17 @@ export async function runScripted(code:string, arg:{
                         return ''
                     }
                     
-                    const img = await readImage(character.image)
-                    const imgObj = new Image()
-                    const extention = character.image.split('.').at(-1)
-
-                    imgObj.src = URL.createObjectURL(new Blob([asBuffer(img)], {type: `image/${extention}`}))
-
-                    const imgid = await writeInlayImage(imgObj, { name: character.image, ext: extention, id: character.image})
-
-                    if (imgid) {
-                        return `{{inlayed::${imgid}}}`
+                    if (character.image.startsWith('assets/')) {
+                        return `{{inlayed::${character.image}}}`
                     }
-                    console.warn('Failed to create character image inlay')
-                    return ''
+
+                    const img = await readImage(character.image)
+                    const imgid = await postInlayAsset({
+                        name: character.image,
+                        data: img
+                    })
+
+                    return imgid ? `{{inlayed::${imgid}}}` : ''
                 } catch (error) {
                     console.error('Error in getCharacterImageMain:', error)
                     return ''
@@ -416,20 +413,17 @@ export async function runScripted(code:string, arg:{
                         return ''
                     }
 
-                    const img = await readImage(icon)
-                    const imgObj = new Image()
-                    const extention = icon.split('.').at(-1)
-
-                    imgObj.src = URL.createObjectURL(new Blob([asBuffer(img)], {type: `image/${extention}`}))
-
-                    const imgid = await writeInlayImage(imgObj, { name: icon, ext: extention, id: icon})
-
-                    if (imgid) {
-                        return `{{inlayed::${imgid}}}`
+                    if (icon.startsWith('assets/')) {
+                        return `{{inlayed::${icon}}}`
                     }
-                    
-                    console.warn('Failed to create character image inlay')
-                    return ''
+
+                    const img = await readImage(icon)
+                    const imgid = await postInlayAsset({
+                        name: icon,
+                        data: img
+                    })
+
+                    return imgid ? `{{inlayed::${imgid}}}` : ''
                 } catch (error) {
                     console.error('Error in getCharacterImageMain:', error)
                     return ''

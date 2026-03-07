@@ -1,4 +1,4 @@
-import { writeInlayImage } from "./files/inlays";
+import { writePersistentInlayImage } from "./files/inlays";
 import type { character } from "../storage/database.svelte";
 import { generateAIImage } from "./stableDiff";
 
@@ -25,7 +25,7 @@ export function runInlayScreen(char:character, data:string):{text:string, promis
                                 }
                                 const imgHTML = new Image()
                                 imgHTML.src = v
-                                const inlay = await writeInlayImage(imgHTML)
+                                const inlay = await writePersistentInlayImage(imgHTML)
                                 return `{{inlay::${inlay}}}`
                             })())
                             return match

@@ -38,6 +38,7 @@ import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { fetch as TauriHTTPFetch } from '@tauri-apps/plugin-http';
 import { moduleUpdate } from "./process/modules";
+import { inlayTokenRegex } from "./util/inlayTokens";
 import type { AccountStorage } from "./storage/accountStorage";
 import { consumeOffloadedCharacterIds, makeColdData, offloadInactiveChats, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 import { isMobile, isTauri, isNodeServer } from "./platform";
@@ -1021,6 +1022,10 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
  */
 const re = /\\/g;
 
+function cloneInlayTokenRegex() {
+    return new RegExp(inlayTokenRegex.source, inlayTokenRegex.flags)
+}
+
 /**
  * Gets the basename of a given path.
  * 
@@ -1059,6 +1064,18 @@ export function getUncleanables(db: Database, uptype: 'basename' | 'pure' = 'bas
         uncleanable.add(bn);
     }
 
+    function addMessageInlayAssets(data: string) {
+        if (!data || !data.includes('{{inlay')) {
+            return
+        }
+        for (const match of data.matchAll(cloneInlayTokenRegex())) {
+            const ref = match[2]
+            if (ref?.startsWith('assets/')) {
+                addUncleanable(ref)
+            }
+        }
+    }
+
     addUncleanable(db.customBackground);
     addUncleanable(db.userIcon);
 
@@ -1088,6 +1105,11 @@ export function getUncleanables(db: Database, uptype: 'basename' | 'pure' = 'bas
                 for (const asset of cha.ccAssets) {
                     addUncleanable(asset.uri);
                 }
+            }
+        }
+        for (const chat of cha.chats ?? []) {
+            for (const message of chat.message ?? []) {
+                addMessageInlayAssets(message.data)
             }
         }
     }
@@ -1141,6 +1163,19 @@ export function replaceDbResources(db: Database, replacer: { [key: string]: stri
         return replacer[data] ?? data;
     }
 
+    function replaceMessageInlayAssets(data: string) {
+        if (!data || !data.includes('{{inlay')) {
+            return data
+        }
+        return data.replace(cloneInlayTokenRegex(), (match, kind, ref) => {
+            const nextRef = replaceData(ref)
+            if (nextRef === ref) {
+                return match
+            }
+            return `{{${kind}::${nextRef}}}`
+        })
+    }
+
     db.customBackground = replaceData(db.customBackground);
     db.userIcon = replaceData(db.userIcon);
 
@@ -1158,6 +1193,11 @@ export function replaceDbResources(db: Database, replacer: { [key: string]: stri
                 for (let i = 0; i < cha.additionalAssets.length; i++) {
                     cha.additionalAssets[i][1] = replaceData(cha.additionalAssets[i][1]);
                 }
+            }
+        }
+        for (const chat of cha.chats ?? []) {
+            for (const message of chat.message ?? []) {
+                message.data = replaceMessageInlayAssets(message.data)
             }
         }
     }

@@ -12,7 +12,7 @@ import type { OpenAIChat } from "./index.svelte";
 import { HypaProcesser } from "./memory/hypamemory";
 import { requestChatData } from "./request/request";
 import { generateAIImage } from "./stableDiff";
-import { writeInlayImage } from "./files/inlays";
+import { writePersistentInlayImage } from "./files/inlays";
 import { runScripted } from "./scriptings";
 import { calcString } from "./infunctions";
 
@@ -1516,7 +1516,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                     }
                     const imgHTML = new Image()
                     imgHTML.src = gen
-                    const inlay = await writeInlayImage(imgHTML)
+                    const inlay = await writePersistentInlayImage(imgHTML)
                     const res = `{{inlay::${inlay}}}`
                     setVar(effect.inputVar, res)
                     break
@@ -1854,7 +1854,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                     }
                     let imgHTML = new Image()
                     imgHTML.src = gen
-                    let inlay = await writeInlayImage(imgHTML)
+                    let inlay = await writePersistentInlayImage(imgHTML)
                     let res = `{{inlay::${inlay}}}`
                     setVar(risuChatParser(effect.outputVar, {chara:char}), res)
                     break
