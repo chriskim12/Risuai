@@ -46,6 +46,8 @@
     let expandedLogs: Set<number> = $state(new Set())
     let allExpanded = $state(false)
     let copiedKey: string | null = $state(null)
+    let waitStartedAt = $state(0)
+    let waitCanForceClose = $state(false)
 
     // Register JSON language for syntax highlighting
     if (!hljs.getLanguage('json')) {
@@ -78,6 +80,21 @@
         }, 1500)
     }
     $effect.pre(() => {
+        if($alertStore.type === 'wait'){
+            if(!waitStartedAt){
+                waitStartedAt = Date.now()
+                waitCanForceClose = false
+                setTimeout(() => {
+                    if($alertStore.type === 'wait' && waitStartedAt){
+                        waitCanForceClose = true
+                    }
+                }, 8000)
+            }
+        }
+        else{
+            waitStartedAt = 0
+            waitCanForceClose = false
+        }
         showDetails = false;
         translatedStackTrace = '';
         isTranslated = false;
@@ -236,6 +253,10 @@
                 <div class="w-full flex justify-center mt-6">
                     <span class="text-gray-500 text-sm">{$alertStore.submsg + '%'}</span>
                 </div>
+            {:else if $alertStore.type === 'wait' && waitCanForceClose}
+                <div class="mt-4 text-sm text-textcolor2">
+                    This loading dialog looks stuck. You can close it manually.
+                </div>
             {/if}
 
             {#if $alertStore.type === 'ask' || $alertStore.type === 'pluginconfirm'}
@@ -299,6 +320,13 @@
                         msg: ''
                     })
                 }}>OK</Button>
+            {:else if $alertStore.type === 'wait' && waitCanForceClose}
+                <Button styled="outlined" className="mt-4" onclick={() => {
+                    alertStore.set({
+                        type: 'none',
+                        msg: ''
+                    })
+                }}>{language.cancel}</Button>
             {:else if $alertStore.type === 'input'}
                 <TextInput value={$alertStore.defaultValue} id="alert-input" autocomplete="off" marginTop list="alert-input-list" />
                 <Button className="mt-4" onclick={() => {

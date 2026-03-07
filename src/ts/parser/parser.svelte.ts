@@ -11,7 +11,7 @@ import css, { type CssAtRuleAST } from '@adobe/css-tools'
 import { selectedCharID } from '../stores.svelte';
 import { calcString } from '../process/infunctions';
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync} from '../util';
-import { getInlayAssetBlob } from '../process/files/inlays';
+import { getInlayAssetBlob, isPersistentInlayRef } from '../process/files/inlays';
 import { getModuleAssets, getModuleLorebooks, getModules } from '../process/modules';
 import hljs from 'highlight.js/lib/core'
 import 'highlight.js/styles/atom-one-dark.min.css'
@@ -759,6 +759,29 @@ function renderImageTag(src:string, style:string, wrapped = false, immediateSrc?
     return imageTag
 }
 
+function renderDeferredInlayTag(id:string, wrapped = false, immediateSrc?:string){
+    const shellTag = wrapped ? 'div' : 'span'
+    const containerStyle = wrapped
+        ? 'display:flex;flex-direction:column;gap:0.5rem;min-height:3rem;'
+        : 'display:inline-flex;align-items:center;gap:0.5rem;min-height:1.5rem;vertical-align:middle;'
+    const imageStyle = wrapped
+        ? 'max-width:100%;display:none;'
+        : 'display:none;max-width:100%;vertical-align:middle;'
+    const imageAttrs = (isTauri || DBState.db?.account?.useSync)
+        ? `src="${immediateSrc ?? id}" alt="${id}" style="${imageStyle}" data-risu-inlay-state="resolved"`
+        : isPersistentInlayRef(id)
+            ? `src="${deferredImagePlaceholder}" data-risu-src="${id}" alt="${id}" style="${imageStyle}" data-risu-loading="true" data-risu-inlay-state="loading"`
+            : `src="${deferredImagePlaceholder}" data-risu-inlay-id="${id}" alt="${id}" style="${imageStyle}" data-risu-loading="true" data-risu-inlay-state="loading"`
+
+    return `<${shellTag} data-risu-image-shell="true" style="${containerStyle}">
+<span data-risu-image-status="loading" style="display:inline-flex;align-items:center;gap:0.5rem;color:var(--risu-theme-textcolor2);font-style:italic;opacity:0.85;">
+<span style="width:1rem;height:1rem;border-radius:9999px;border:2px solid var(--risu-theme-darkborderc);border-top-color:#3b82f6;animation:spin 1s linear infinite;flex-shrink:0;"></span>
+<span>${language.loading}</span>
+</span>
+<img ${imageAttrs} />
+</${shellTag}>`
+}
+
 function trimCacheMap<K, V>(cache:Map<K, V>, maxEntries:number, onEvict?:(value:V)=>void){
     while(cache.size > maxEntries){
         const oldestKey = cache.keys().next().value
@@ -811,6 +834,10 @@ async function parseInlayAssets(data:string){
     const assetMap = new Map<string, {asset: Awaited<ReturnType<typeof getInlayAssetBlob>>, url?: string}>()
 
     await Promise.all(uniqueIds.map(async (id) => {
+        if (isPersistentInlayRef(id)) {
+            assetMap.set(id, { asset: null, url: undefined })
+            return
+        }
         const asset = await getInlayAssetBlob(id)
         let url = blobUrlCache.get(id)
         if(url){
@@ -835,13 +862,16 @@ async function parseInlayAssets(data:string){
                 if(DBState.db.hideAllImages){
                     return ''
                 }
-                return `${prefix}<img src="${url}"/>${postfix}`
+                return `${prefix}${renderDeferredInlayTag(id, false, url)}${postfix}`
             case 'video':
                 return `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`
             case 'audio':
                 return `${prefix}<audio controls><source src="${url}" type="audio/mpeg"></audio>${postfix}`
             default:
-                return inlay
+                if (isPersistentInlayRef(id) && !DBState.db.hideAllImages) {
+                    return `${prefix}${renderDeferredInlayTag(id, false)}${postfix}`
+                }
+                return `${prefix}<span class="x-risu-inlay-unavailable text-textcolor2 italic">Inlay unavailable</span>${postfix}`
         }
     })
 }

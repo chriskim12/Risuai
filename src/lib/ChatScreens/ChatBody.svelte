@@ -8,6 +8,7 @@
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets } from "src/ts/process/modules";
+    import { getInlayAssetBlob } from "src/ts/process/files/inlays";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
@@ -180,7 +181,12 @@
                 }
                 const img = entry.target as HTMLImageElement
                 deferredImageObserver?.unobserve(img)
-                void resolveDeferredImage(img)
+                if (img.dataset.risuInlayId) {
+                    void resolveDeferredInlayImage(img)
+                }
+                else {
+                    void resolveDeferredImage(img)
+                }
             }
         }, {
             rootMargin: '400px 0px'
@@ -199,7 +205,57 @@
         const resolved = await getFileSrc(deferredSrc)
         if (resolved) {
             img.src = resolved
+            markImageResolved(img)
+            return
         }
+
+        markImageFailed(img)
+    }
+
+    function getImageShell(img: HTMLImageElement) {
+        return img.closest('[data-risu-image-shell="true"]') as HTMLElement | null
+    }
+
+    function markImageResolved(img: HTMLImageElement) {
+        const shell = getImageShell(img)
+        shell?.querySelector('[data-risu-image-status="loading"]')?.remove()
+        shell?.querySelector('[data-risu-image-status="failed"]')?.remove()
+        img.style.display = ''
+        img.dataset.risuLoading = 'false'
+        img.dataset.risuInlayState = 'resolved'
+    }
+
+    function markImageFailed(img: HTMLImageElement) {
+        const shell = getImageShell(img)
+        if (!shell) {
+            return
+        }
+
+        const loading = shell.querySelector('[data-risu-image-status="loading"], [data-risu-image-status="failed"]')
+        if (loading) {
+            loading.setAttribute('data-risu-image-status', 'failed')
+            loading.textContent = 'Image unavailable'
+        }
+
+        img.dataset.risuLoading = 'false'
+        img.dataset.risuInlayState = 'failed'
+    }
+
+    async function resolveDeferredInlayImage(img: HTMLImageElement) {
+        const inlayId = img.dataset.risuInlayId
+        if (!inlayId || img.dataset.risuResolved === 'true') {
+            return
+        }
+
+        img.dataset.risuResolved = 'true'
+        const resolved = await getInlayAssetBlob(inlayId)
+        if (resolved?.data) {
+            img.src = URL.createObjectURL(resolved.data)
+            markImageResolved(img)
+            return
+        }
+
+        markImageFailed(img)
     }
 
     const checkImg = () => {
@@ -215,6 +271,22 @@
                 }
                 else {
                     void resolveDeferredImage(img)
+                }
+            })
+        }
+
+        const deferredInlayImgs = bodyRoot?.querySelectorAll('img[data-risu-inlay-id]') as NodeListOf<HTMLImageElement>
+        if (deferredInlayImgs && deferredInlayImgs.length > 0) {
+            const observer = ensureDeferredImageObserver()
+            deferredInlayImgs.forEach((img) => {
+                if (img.dataset.risuResolved === 'true') {
+                    return
+                }
+                if (observer) {
+                    observer.observe(img)
+                }
+                else {
+                    void resolveDeferredInlayImage(img)
                 }
             })
         }
