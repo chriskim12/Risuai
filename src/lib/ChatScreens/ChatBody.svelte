@@ -4,6 +4,7 @@
     import { DBState } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
+    import { language } from "../../lang"
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets } from "src/ts/process/modules";
@@ -308,7 +309,14 @@
 </script>
 
 {#await markParsingResult}
-    {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}
+    {#if trimMarkdown(lastParsed)}
+        {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}
+    {:else}
+        <div class="flex items-center gap-3 text-textcolor2 italic opacity-80 min-h-8">
+            <div class="w-5 h-5 rounded-full border-2 border-darkborderc border-t-blue-500 animate-spin shrink-0"></div>
+            <span>{role === 'char' ? language.loadingChatData : language.loading}</span>
+        </div>
+    {/if}
 {:then md}
     {@html addMetadataToElement(trimMarkdown(md), modelShortName)}
 {/await}
