@@ -31,7 +31,7 @@ import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import type { AccountStorage } from "./storage/accountStorage";
-import { hotChatStorageHeader, makeColdData, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
+import { getExternalStoredChatAssetRefs, hotChatStorageHeader, makeColdData, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 import {
     forageStorage,
     saveDb,
@@ -505,6 +505,10 @@ async function cleanChunks() {
     }
 
     const uncleanable = new Set(getUncleanables(db))
+    const externalChatAssets = await getExternalStoredChatAssetRefs(db)
+    for (const asset of externalChatAssets) {
+        uncleanable.add(asset)
+    }
     if (isTauri) {
         const assets = await readDir('assets', { baseDir: BaseDirectory.AppData })
         console.log(assets)

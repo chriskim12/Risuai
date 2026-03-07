@@ -11,8 +11,9 @@ import { isMobile, isTauri, isNodeServer } from "src/ts/platform"
 import { DBState, selectedCharID } from "../stores.svelte"
 import type { NodeStorage } from "../storage/nodeStorage"
 import { fetchProtectedResource } from "../sionyw"
-import type { Chat } from "../storage/database.svelte"
+import type { Chat, Database, Message } from "../storage/database.svelte"
 import { get } from "svelte/store"
+import { inlayTokenRegex } from "../util/inlayTokens"
 
 export const coldStorageHeader = '\uEF01COLDSTORAGE\uEF01'
 export const hotChatStorageHeader = '\uEF01CHATOFFLOAD\uEF01'
@@ -26,6 +27,30 @@ let recentHotChatKey: string | null = null
 
 function getChatMemoryKey(characterId:string, chatId:string){
     return `${characterId}::${chatId}`
+}
+
+function getStorageBasename(path:string){
+    return path.split('/').at(-1) ?? path
+}
+
+function cloneInlayTokenRegex() {
+    return new RegExp(inlayTokenRegex.source, inlayTokenRegex.flags)
+}
+
+function addMessageInlayAssets(messages: Message[] | undefined, refs: Set<string>, uptype: 'basename' | 'pure') {
+    for (const message of messages ?? []) {
+        const data = message?.data
+        if (!data || !data.includes('{{inlay')) {
+            continue
+        }
+        for (const match of data.matchAll(cloneInlayTokenRegex())) {
+            const ref = match[2]
+            if (!ref?.startsWith('assets/')) {
+                continue
+            }
+            refs.add(uptype === 'basename' ? getStorageBasename(ref) : ref)
+        }
+    }
 }
 
 function isRecentHotChat(characterId:string, chatId:string){
@@ -194,6 +219,47 @@ async function getCompressedJsonItem(key:string) {
     }
     const text = new TextDecoder().decode(await decompress(new Uint8Array(stored)))
     return JSON.parse(text)
+}
+
+export async function getExternalStoredChatAssetRefs(db: Database, uptype: 'basename' | 'pure' = 'basename') {
+    const refs = new Set<string>()
+
+    for (const character of db.characters ?? []) {
+        for (const chat of character.chats ?? []) {
+            const firstMessage = chat.message?.[0]?.data
+            if (!firstMessage) {
+                continue
+            }
+
+            if (firstMessage.startsWith(coldStorageHeader)) {
+                try {
+                    const coldDataKey = firstMessage.slice(coldStorageHeader.length)
+                    const coldData = await getColdStorageItem(coldDataKey)
+                    if (Array.isArray(coldData)) {
+                        addMessageInlayAssets(coldData, refs, uptype)
+                    }
+                    else {
+                        addMessageInlayAssets(coldData?.message, refs, uptype)
+                    }
+                } catch (error) {
+                    console.warn('Failed to scan cold storage chat assets', error)
+                }
+                continue
+            }
+
+            if (firstMessage.startsWith(hotChatStorageHeader)) {
+                try {
+                    const storageKey = firstMessage.slice(hotChatStorageHeader.length)
+                    const hotData = await getCompressedJsonItem(storageKey)
+                    addMessageInlayAssets(hotData?.message, refs, uptype)
+                } catch (error) {
+                    console.warn('Failed to scan offloaded chat assets', error)
+                }
+            }
+        }
+    }
+
+    return Array.from(refs)
 }
 
 async function setCompressedJsonItem(key:string, value:any) {
