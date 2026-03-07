@@ -3,7 +3,7 @@ import markdownit from 'markdown-it'
 import { appVer, getCurrentCharacter, getDatabase, type Database, type character, type customscript, type groupChat, type triggerscript } from '../storage/database.svelte';
 import { DBState, selIdState } from '../stores.svelte';
 import { aiWatermarkingLawApplies, getFileSrc } from '../globalApi.svelte';
-import { isTauri, isNodeServer } from "src/ts/platform"
+import { isMobile, isTauri, isNodeServer } from "src/ts/platform"
 import { getChatVar, setChatVar, getGlobalChatVar } from './chatVar.svelte';
 import { processScriptFull } from '../process/scripts';
 import { get } from 'svelte/store';
@@ -429,14 +429,19 @@ function getEmoSrc(emoArr: string[][], emoPaths: AssetPaths) {
 }
 
 const fileSrcCache = new Map<string, string>()
+const PARSER_FILE_SRC_CACHE_LIMIT = 48
+const PARSER_FILE_SRC_CACHE_MOBILE_LIMIT = 16
 
 async function getFileSrcCached(path:string){
     let cached = fileSrcCache.get(path)
     if(cached){
+        fileSrcCache.delete(path)
+        fileSrcCache.set(path, cached)
         return cached
     }
     const src = await getFileSrc(path)
     fileSrcCache.set(path, src)
+    trimParserAssetCaches()
     return src
 }
 
@@ -509,7 +514,7 @@ async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|c
             if(!path){
                 return ''
             }
-            return `<img src="${path}" alt="${path}" style="${assetWidthString} "/>`
+            return renderImageTag(srcPath, assetWidthString, false, path)
         }
 
         if(type === 'source'){
@@ -557,9 +562,9 @@ async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|c
             case 'path':
                 return p
             case 'img':
-                return `<img src="${p}" alt="${p}" style="${assetWidthString} "/>`
+                return renderImageTag(pSrc, assetWidthString, false, p)
             case 'image':
-                return `<div class="risu-inlay-image"><img src="${p}" alt="${p}" style="${assetWidthString}"/></div>\n`
+                return renderImageTag(pSrc, assetWidthString, true, p)
             case 'video':
                 return `<video controls autoplay loop><source src="${p}" type="video/mp4"></video>\n`
             case 'video-img':
@@ -575,7 +580,7 @@ async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|c
                 if(match.ext && videoExtensions.includes(match.ext)){
                     return `<video autoplay muted loop><source src="${p}" type="video/mp4"></video>\n`
                 }
-                return `<img src="${p}" alt="${p}" style="${assetWidthString} "/>\n`
+                return renderImageTag(pSrc, assetWidthString, false, p) + '\n'
             }
             case 'bgm':
                 return `<div risu-ctrl="bgm___auto___${p}" style="display:none;"></div>\n`
@@ -664,25 +669,88 @@ function trimmer(str:string){
 }
 
 const blobUrlCache = new Map<string, string>()
+const PARSER_BLOB_URL_CACHE_LIMIT = 32
+const PARSER_BLOB_URL_CACHE_MOBILE_LIMIT = 12
+const deferredImagePlaceholder = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+
+function renderImageTag(src:string, style:string, wrapped = false, immediateSrc?:string){
+    const imageTag = (isTauri || DBState.db?.account?.useSync)
+        ? `<img src="${immediateSrc ?? src}" alt="${src}" style="${style}" />`
+        : `<img src="${deferredImagePlaceholder}" data-risu-src="${src}" alt="${src}" style="${style}" />`
+
+    if(wrapped){
+        return `<div class="risu-inlay-image">${imageTag}</div>\n`
+    }
+    return imageTag
+}
+
+function trimCacheMap<K, V>(cache:Map<K, V>, maxEntries:number, onEvict?:(value:V)=>void){
+    while(cache.size > maxEntries){
+        const oldestKey = cache.keys().next().value
+        if(oldestKey === undefined){
+            break
+        }
+        const oldestValue = cache.get(oldestKey)
+        cache.delete(oldestKey)
+        if(oldestValue !== undefined){
+            onEvict?.(oldestValue)
+        }
+    }
+}
+
+export function trimParserAssetCaches(mode:'soft'|'hard' = 'soft'){
+    if(mode === 'hard'){
+        fileSrcCache.clear()
+        for(const url of blobUrlCache.values()){
+            URL.revokeObjectURL(url)
+        }
+        blobUrlCache.clear()
+        return
+    }
+
+    trimCacheMap(
+        fileSrcCache,
+        isMobile ? PARSER_FILE_SRC_CACHE_MOBILE_LIMIT : PARSER_FILE_SRC_CACHE_LIMIT
+    )
+    trimCacheMap(
+        blobUrlCache,
+        isMobile ? PARSER_BLOB_URL_CACHE_MOBILE_LIMIT : PARSER_BLOB_URL_CACHE_LIMIT,
+        (url) => URL.revokeObjectURL(url)
+    )
+}
 
 async function parseInlayAssets(data:string){
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g)
     if(inlayMatch){
-        for(const inlay of inlayMatch){
-            const inlayType = inlay.startsWith('{{inlayed') ? 'inlayed' : 'inlay'
-            const id = inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
-            let prefix = inlayType !== 'inlay' ? `<div class="risu-inlay-image">` : ''
-            let postfix = inlayType !== 'inlay' ? `</div>\n\n` : ''
+        const uniqueIds = [...new Set(inlayMatch.map((inlay) => {
+            return inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
+        }))]
+        const assetMap = new Map<string, {asset: Awaited<ReturnType<typeof getInlayAssetBlob>>, url?: string}>()
 
+        await Promise.all(uniqueIds.map(async (id) => {
             const asset = await getInlayAssetBlob(id)
             let url = blobUrlCache.get(id)
+            if(url){
+                blobUrlCache.delete(id)
+                blobUrlCache.set(id, url)
+            }
             if(!url && asset?.data){
                 url = URL.createObjectURL(asset.data)
                 blobUrlCache.set(id, url)
-            } 
+            }
+            assetMap.set(id, { asset, url })
+        }))
+        trimParserAssetCaches()
+
+        for(const inlay of inlayMatch){
+            const inlayType = inlay.startsWith('{{inlayed') ? 'inlayed' : 'inlay'
+            const id = inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
+            const { asset, url } = assetMap.get(id) ?? {}
+            const prefix = inlayType !== 'inlay' ? `<div class="risu-inlay-image">` : ''
+            const postfix = inlayType !== 'inlay' ? `</div>\n\n` : ''
+
             switch(asset?.type){
                 case 'image':
-                    // Hide inlay images when hideAllImages is enabled
                     if(DBState.db.hideAllImages){
                         data = data.replace(inlay, '')
                         break
@@ -696,7 +764,6 @@ async function parseInlayAssets(data:string){
                     data = data.replace(inlay, `${prefix}<audio controls><source src="${url}" type="audio/mpeg"></audio>${postfix}`)
                     break
             }
-            
         }
     }
     return data

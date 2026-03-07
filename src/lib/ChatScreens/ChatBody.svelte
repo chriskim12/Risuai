@@ -1,5 +1,6 @@
 <script lang="ts">
     import isEqual from "lodash/isEqual"
+    import { onDestroy } from "svelte"
     import { DBState } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
@@ -42,6 +43,7 @@
     let lastParsed = ''
     let lastCharArg:string|simpleCharacterArgument = null
     let lastChatId = -10
+    let deferredImageObserver: IntersectionObserver | null = null
 
     function getCbsCondition(){
         try{
@@ -165,7 +167,56 @@
         }
     }
 
+    function ensureDeferredImageObserver() {
+        if (deferredImageObserver || typeof IntersectionObserver === 'undefined') {
+            return deferredImageObserver
+        }
+
+        deferredImageObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting) {
+                    continue
+                }
+                const img = entry.target as HTMLImageElement
+                deferredImageObserver?.unobserve(img)
+                void resolveDeferredImage(img)
+            }
+        }, {
+            rootMargin: '400px 0px'
+        })
+
+        return deferredImageObserver
+    }
+
+    async function resolveDeferredImage(img: HTMLImageElement) {
+        const deferredSrc = img.dataset.risuSrc
+        if (!deferredSrc || img.dataset.risuResolved === 'true') {
+            return
+        }
+
+        img.dataset.risuResolved = 'true'
+        const resolved = await getFileSrc(deferredSrc)
+        if (resolved) {
+            img.src = resolved
+        }
+    }
+
     const checkImg = () => {
+        const deferredImgs = bodyRoot?.querySelectorAll('img[data-risu-src]') as NodeListOf<HTMLImageElement>
+        if (deferredImgs && deferredImgs.length > 0) {
+            const observer = ensureDeferredImageObserver()
+            deferredImgs.forEach((img) => {
+                if (img.dataset.risuResolved === 'true') {
+                    return
+                }
+                if (observer) {
+                    observer.observe(img)
+                }
+                else {
+                    void resolveDeferredImage(img)
+                }
+            })
+        }
 
         if(!DBState.db.newImageHandlingBeta){
             return
@@ -249,6 +300,10 @@
 
     $effect(() => {
         markParsingResult.then(checkImg)
+    })
+
+    onDestroy(() => {
+        deferredImageObserver?.disconnect()
     })
 </script>
 

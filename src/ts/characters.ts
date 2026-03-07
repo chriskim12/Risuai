@@ -6,13 +6,15 @@ import { checkNullish, findCharacterbyId, getUserName, selectMultipleFile, selec
 import { v4 as uuidv4, v4 } from 'uuid';
 import { getImageType } from "./media";
 import { MobileGUIStack, OpenRealmStore, selectedCharID } from "./stores.svelte";
-import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc, requiresFullEncoderReload } from "./globalApi.svelte";
+import { AppendableBuffer, changeChatTo, checkCharOrder, clearRuntimeAssetCaches, downloadFile, getFileSrc, requiresFullEncoderReload } from "./globalApi.svelte";
 import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { doingChat } from "./process/index.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
+import { isMobile } from "./platform";
+import { scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 
 export function createNewCharacter() {
     let db = getDatabase()
@@ -891,9 +893,15 @@ export function changeChar(index: number, arg:{
     if(get(doingChat)){
       return
     }
+    if(isMobile && index !== get(selectedCharID)){
+        clearRuntimeAssetCaches('hard')
+    }
     reseter();
     characterFormatUpdate(index, {
       updateInteraction: true,
     });
     selectedCharID.set(index);
+    if(isMobile){
+        scheduleOffloadInactiveChats()
+    }
 }

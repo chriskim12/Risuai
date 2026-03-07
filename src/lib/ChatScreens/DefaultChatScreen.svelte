@@ -27,7 +27,7 @@
     import { postChatFile } from 'src/ts/process/files/multisend';
     import { getInlayAsset } from 'src/ts/process/files/inlays';
     import { ConnectionOpenStore } from 'src/ts/sync/multiuser';
-    import { coldStorageHeader, preLoadChat } from 'src/ts/process/coldstorage.svelte';
+    import { isExternallyStoredChat, preLoadChat } from 'src/ts/process/coldstorage.svelte';
     import Chats from './Chats.svelte';
     import Button from '../UI/GUI/Button.svelte';
     import PluginDefinedIcon from '../Others/PluginDefinedIcon.svelte';
@@ -43,7 +43,7 @@
     let messageInput:string = $state('')
     let messageInputTranslate:string = $state('')
     let openMenu = $state(false)
-    let loadPages = $state(30)
+    let loadPages = $state(12)
     let autoMode = $state(false)
     let rerolls:Message[][] = []
     let rerollid = -1
@@ -494,7 +494,7 @@
                 mergedCanvas.remove();
             }
             alertNormal(language.screenshotSaved)
-            loadPages = 10
+            loadPages = 12
         } catch (error) {
             console.error(error)
             alertError("Error while taking screenshot")
@@ -572,7 +572,7 @@
             //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
             const scrolled = (e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop)
             if(scrolled < 100 && DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.length > loadPages){
-                loadPages += 15
+                loadPages += 12
             }
             const chatTarget = e.target as HTMLElement;
             const chatsContainer = (DBState.db.fixedChatTextarea && chatTarget.children[1]) ? chatTarget.children[1] : chatTarget.children[0];
@@ -784,7 +784,7 @@
                 )} {send}/>
             {/if}
 
-            {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message?.[0]?.data?.startsWith(coldStorageHeader)  }
+            {#if isExternallyStoredChat(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage])  }
                 {#await preLoadChat($selectedCharID, DBState.db.characters[$selectedCharID].chatPage)}
                     <div class="w-full flex justify-center text-textcolor2 italic mb-12">
                         {language.loadingChatData}

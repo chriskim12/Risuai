@@ -20,7 +20,7 @@ import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingS
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, alertTOS, waitAlert } from "./alert";
 import { checkDriverInit, syncDrive } from "./drive/drive";
-import { hasher } from "./parser/parser.svelte";
+import { hasher, trimParserAssetCaches } from "./parser/parser.svelte";
 import { characterURLImport, hubURL } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { loadRisuAccountData } from "./drive/accounter";
@@ -39,8 +39,8 @@ import { initMobileGesture } from "./hotkey";
 import { fetch as TauriHTTPFetch } from '@tauri-apps/plugin-http';
 import { moduleUpdate } from "./process/modules";
 import type { AccountStorage } from "./storage/accountStorage";
-import { makeColdData } from "./process/coldstorage.svelte";
-import { isTauri, isNodeServer } from "./platform";
+import { consumeOffloadedCharacterIds, makeColdData, offloadInactiveChats, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
+import { isMobile, isTauri, isNodeServer } from "./platform";
 
 export const forageStorage = new AutoStorage()
 
@@ -101,6 +101,122 @@ let fileCache: {
 
 let pathCache: { [key: string]: string } = {}
 let checkedPaths: string[] = []
+const mobileAssetUrlCache = new Map<string, { url:string, bytes:number }>()
+const mobileAssetLoadCache = new Map<string, Promise<string>>()
+const MOBILE_ASSET_CACHE_ENTRY_LIMIT = 12
+const MOBILE_ASSET_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
+
+function getAssetMimeType(loc:string){
+    const ext = loc.split('.').at(-1)?.toLowerCase()
+    switch(ext){
+        case 'png':
+            return 'image/png'
+        case 'jpg':
+        case 'jpeg':
+            return 'image/jpeg'
+        case 'gif':
+            return 'image/gif'
+        case 'webp':
+            return 'image/webp'
+        case 'svg':
+            return 'image/svg+xml'
+        case 'avif':
+            return 'image/avif'
+        case 'mp4':
+        case 'm4v':
+            return 'video/mp4'
+        case 'webm':
+            return 'video/webm'
+        case 'mp3':
+            return 'audio/mpeg'
+        case 'wav':
+            return 'audio/wav'
+        case 'ogg':
+            return 'audio/ogg'
+        default:
+            return 'application/octet-stream'
+    }
+}
+
+function trimMobileAssetUrlCache(maxEntries = MOBILE_ASSET_CACHE_ENTRY_LIMIT, maxBytes = MOBILE_ASSET_CACHE_BYTE_LIMIT){
+    let totalBytes = 0
+    for(const entry of mobileAssetUrlCache.values()){
+        totalBytes += entry.bytes
+    }
+
+    while(mobileAssetUrlCache.size > maxEntries || totalBytes > maxBytes){
+        const oldestKey = mobileAssetUrlCache.keys().next().value
+        if(oldestKey === undefined){
+            break
+        }
+        const oldest = mobileAssetUrlCache.get(oldestKey)
+        mobileAssetUrlCache.delete(oldestKey)
+        if(oldest){
+            totalBytes -= oldest.bytes
+            URL.revokeObjectURL(oldest.url)
+        }
+    }
+}
+
+async function getMobileAssetUrl(loc:string){
+    const cached = mobileAssetUrlCache.get(loc)
+    if(cached){
+        mobileAssetUrlCache.delete(loc)
+        mobileAssetUrlCache.set(loc, cached)
+        return cached.url
+    }
+
+    const pending = mobileAssetLoadCache.get(loc)
+    if(pending){
+        return await pending
+    }
+
+    const loadPromise = (async () => {
+        const data = await forageStorage.getItem(loc) as unknown as Uint8Array
+        if(!data){
+            return ''
+        }
+        const blobBytes = new Uint8Array(data.byteLength)
+        blobBytes.set(data)
+        const url = URL.createObjectURL(new Blob([blobBytes], { type: getAssetMimeType(loc) }))
+        mobileAssetUrlCache.set(loc, {
+            url,
+            bytes: data.byteLength
+        })
+        trimMobileAssetUrlCache()
+        return url
+    })()
+
+    mobileAssetLoadCache.set(loc, loadPromise)
+    try{
+        return await loadPromise
+    } finally {
+        mobileAssetLoadCache.delete(loc)
+    }
+}
+
+export function clearRuntimeAssetCaches(mode:'soft'|'hard' = 'soft'){
+    trimParserAssetCaches(mode)
+
+    if(!isMobile){
+        return
+    }
+
+    if(mode === 'hard'){
+        for(const entry of mobileAssetUrlCache.values()){
+            URL.revokeObjectURL(entry.url)
+        }
+        mobileAssetUrlCache.clear()
+        mobileAssetLoadCache.clear()
+        fileCache = {
+            origin: [],
+            res: []
+        }
+        return
+    }
+
+    trimMobileAssetUrlCache()
+}
 
 /**
  * Gets the source URL of a file.
@@ -191,6 +307,9 @@ export async function getFileSrc(loc: string) {
             }
         }
         else {
+            if (isMobile) {
+                return await getMobileAssetUrl(loc)
+            }
             let ind = fileCache.origin.indexOf(loc)
             if (ind === -1) {
                 ind = fileCache.origin.length
@@ -441,6 +560,14 @@ export async function saveDb() {
             if (!db.characters) {
                 await sleep(1000)
                 continue
+            }
+
+            await offloadInactiveChats()
+            const offloadedCharacterIds = consumeOffloadedCharacterIds()
+            for(const chaId of offloadedCharacterIds){
+                if(!toSave.character.includes(chaId)){
+                    toSave.character.unshift(chaId)
+                }
             }
 
             await encoder.set(db, toSave)
@@ -2145,6 +2272,7 @@ export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
 }
 
 export function changeChatTo(IdOrIndex: string | number) {
+    const currentChatPage = DBState.db.characters[selIdState.selId]?.chatPage
     let index = -1
     if (typeof IdOrIndex === 'number') {
         index = IdOrIndex
@@ -2161,7 +2289,14 @@ export function changeChatTo(IdOrIndex: string | number) {
         return
     }
 
+    if(isMobile && currentChatPage !== index){
+        clearRuntimeAssetCaches('hard')
+    }
+
     DBState.db.characters[selIdState.selId].chatPage = index
+    if(isMobile && currentChatPage !== index){
+        scheduleOffloadInactiveChats()
+    }
     ReloadGUIPointer.set(Math.random())
 }
 

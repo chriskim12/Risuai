@@ -7,12 +7,21 @@ import {
     remove
 } from "@tauri-apps/plugin-fs"
 import { forageStorage } from "../globalApi.svelte"
-import { isTauri, isNodeServer } from "src/ts/platform"
-import { DBState } from "../stores.svelte"
+import { isMobile, isTauri, isNodeServer } from "src/ts/platform"
+import { DBState, selectedCharID } from "../stores.svelte"
 import type { NodeStorage } from "../storage/nodeStorage"
 import { fetchProtectedResource } from "../sionyw"
+import type { Chat } from "../storage/database.svelte"
+import { get } from "svelte/store"
 
 export const coldStorageHeader = '\uEF01COLDSTORAGE\uEF01'
+export const hotChatStorageHeader = '\uEF01CHATOFFLOAD\uEF01'
+const hotChatStoragePrefix = 'chatcache/'
+const hotChatOffloadMessageThreshold = 24
+let hotChatOffloadDirty = true
+let hotChatOffloadPromise: Promise<string[]> | null = null
+let hotChatOffloadTimer: ReturnType<typeof setTimeout> | null = null
+const pendingOffloadedCharacterIds = new Set<string>()
 
 async function decompress(data:Uint8Array) {
     const fflate = await import('fflate')
@@ -153,6 +162,207 @@ async function setColdStorageItem(key:string, value:any) {
     }
 }
 
+async function getCompressedJsonItem(key:string) {
+    const stored = await forageStorage.getItem(key)
+    if(!stored){
+        return null
+    }
+    const text = new TextDecoder().decode(await decompress(new Uint8Array(stored)))
+    return JSON.parse(text)
+}
+
+async function setCompressedJsonItem(key:string, value:any) {
+    const fflate = await import('fflate')
+    const json = JSON.stringify(value)
+    const compressed = await (new Promise<Uint8Array>((resolve, reject) => {
+        fflate.compress(new TextEncoder().encode(json), (err, result) => {
+            if (err) {
+                reject(err)
+                return
+            }
+            resolve(result)
+        })
+    }))
+    await forageStorage.setItem(key, compressed)
+}
+
+function getHotChatStorageKey(characterId:string, chatId:string){
+    return `${hotChatStoragePrefix}${characterId}/${chatId}.bin`
+}
+
+function getLatestChatTimestamp(chat:Chat){
+    let latest = chat.lastDate ?? 0
+    for(const message of chat.message ?? []){
+        if((message?.time ?? 0) > latest){
+            latest = message.time
+        }
+    }
+    return latest || Date.now()
+}
+
+function isColdStorageChat(chat?:Chat|null){
+    return Boolean(chat?.message?.[0]?.data?.startsWith(coldStorageHeader))
+}
+
+function isHotOffloadedChat(chat?:Chat|null){
+    return Boolean(chat?.message?.[0]?.data?.startsWith(hotChatStorageHeader))
+}
+
+export function isExternallyStoredChat(chat?:Chat|null){
+    return isColdStorageChat(chat) || isHotOffloadedChat(chat)
+}
+
+function buildHotChatPayload(chat:Chat){
+    return {
+        message: chat.message,
+        note: chat.note,
+        localLore: chat.localLore,
+        sdData: chat.sdData,
+        supaMemoryData: chat.supaMemoryData,
+        hypaV2Data: chat.hypaV2Data,
+        lastMemory: chat.lastMemory,
+        suggestMessages: chat.suggestMessages,
+        isStreaming: chat.isStreaming,
+        scriptstate: chat.scriptstate,
+        modules: chat.modules,
+        bindedPersona: chat.bindedPersona,
+        fmIndex: chat.fmIndex,
+        hypaV3Data: chat.hypaV3Data,
+        folderId: chat.folderId,
+        lastDate: chat.lastDate,
+        bookmarks: chat.bookmarks,
+        bookmarkNames: chat.bookmarkNames,
+    }
+}
+
+function createOffloadErrorMessage(storageKey:string, lastDate = Date.now()){
+    console.warn(`Failed to restore offloaded chat payload from ${storageKey}`)
+    return [{
+        role: 'char' as const,
+        data: '[Failed to restore offloaded chat data]',
+        time: lastDate,
+        isComment: true,
+    }]
+}
+
+function restoreHotChatPayload(chat:Chat, payload:ReturnType<typeof buildHotChatPayload>){
+    chat.message = payload.message ?? []
+    chat.note = payload.note ?? ''
+    chat.localLore = payload.localLore ?? []
+    chat.sdData = payload.sdData
+    chat.supaMemoryData = payload.supaMemoryData
+    chat.hypaV2Data = payload.hypaV2Data
+    chat.lastMemory = payload.lastMemory
+    chat.suggestMessages = payload.suggestMessages
+    chat.isStreaming = payload.isStreaming
+    chat.scriptstate = payload.scriptstate
+    chat.modules = payload.modules
+    chat.bindedPersona = payload.bindedPersona
+    chat.fmIndex = payload.fmIndex
+    chat.hypaV3Data = payload.hypaV3Data
+    chat.folderId = payload.folderId
+    chat.lastDate = payload.lastDate
+    chat.bookmarks = payload.bookmarks
+    chat.bookmarkNames = payload.bookmarkNames
+}
+
+function replaceChatWithHotPlaceholder(chat:Chat, storageKey:string){
+    const latest = getLatestChatTimestamp(chat)
+    chat.message = [{
+        time: latest,
+        data: hotChatStorageHeader + storageKey,
+        role: 'char',
+        isComment: true,
+    }]
+    chat.note = ''
+    chat.localLore = []
+    chat.sdData = ''
+    chat.supaMemoryData = ''
+    chat.hypaV2Data = undefined
+    chat.lastMemory = ''
+    chat.suggestMessages = []
+    chat.scriptstate = {}
+    chat.modules = []
+    chat.hypaV3Data = undefined
+    chat.lastDate = latest
+}
+
+export function markInactiveChatsDirty(){
+    hotChatOffloadDirty = true
+}
+
+export function scheduleOffloadInactiveChats(delay = 250){
+    markInactiveChatsDirty()
+    if(!isMobile){
+        return
+    }
+    if(hotChatOffloadTimer){
+        clearTimeout(hotChatOffloadTimer)
+    }
+    hotChatOffloadTimer = setTimeout(() => {
+        hotChatOffloadTimer = null
+        void offloadInactiveChats()
+    }, delay)
+}
+
+export function consumeOffloadedCharacterIds(){
+    const ids = [...pendingOffloadedCharacterIds]
+    pendingOffloadedCharacterIds.clear()
+    return ids
+}
+
+export async function offloadInactiveChats(force = false){
+    if(!isMobile){
+        return []
+    }
+    if(!force && !hotChatOffloadDirty){
+        return []
+    }
+    if(hotChatOffloadPromise){
+        return await hotChatOffloadPromise
+    }
+
+    hotChatOffloadPromise = (async () => {
+        const currentCharacterIndex = get(selectedCharID)
+        const touchedCharacterIds = new Set<string>()
+
+        for(let characterIndex = 0; characterIndex < DBState.db.characters.length; characterIndex++){
+            const character = DBState.db.characters[characterIndex]
+            for(let chatIndex = 0; chatIndex < character.chats.length; chatIndex++){
+                if(characterIndex === currentCharacterIndex && chatIndex === character.chatPage){
+                    continue
+                }
+
+                const chat = character.chats[chatIndex]
+                if(!chat?.id || chat.isStreaming){
+                    continue
+                }
+                if(isExternallyStoredChat(chat)){
+                    continue
+                }
+                if((chat.message?.length ?? 0) <= hotChatOffloadMessageThreshold){
+                    continue
+                }
+
+                const storageKey = getHotChatStorageKey(character.chaId, chat.id)
+                await setCompressedJsonItem(storageKey, buildHotChatPayload(chat))
+                replaceChatWithHotPlaceholder(chat, storageKey)
+                touchedCharacterIds.add(character.chaId)
+                pendingOffloadedCharacterIds.add(character.chaId)
+            }
+        }
+
+        hotChatOffloadDirty = false
+        return [...touchedCharacterIds]
+    })()
+
+    try{
+        return await hotChatOffloadPromise
+    } finally {
+        hotChatOffloadPromise = null
+    }
+}
+
 async function removeColdStorageItem(key:string) {
     if(isTauri){
         try {
@@ -247,7 +457,7 @@ export async function preLoadChat(characterIndex:number, chatIndex:number){
         return
     }
 
-    if(chat.message?.[0]?.data?.startsWith(coldStorageHeader)){
+    if(isColdStorageChat(chat)){
         //bring back from cold storage
         const coldDataKey = chat.message[0].data.slice(coldStorageHeader.length)
         const coldData = await getColdStorageItem(coldDataKey)
@@ -265,6 +475,18 @@ export async function preLoadChat(characterIndex:number, chatIndex:number){
         await setColdStorageItem(coldDataKey + '_accessMeta', {
             lastAccess: Date.now()
         })
+    }
+    else if(isHotOffloadedChat(chat)){
+        const storageKey = chat.message[0].data.slice(hotChatStorageHeader.length)
+        const hotData = await getCompressedJsonItem(storageKey)
+        if(hotData){
+            restoreHotChatPayload(chat, hotData)
+            chat.lastDate = getLatestChatTimestamp(chat)
+        }
+        else{
+            chat.message = createOffloadErrorMessage(storageKey, chat.lastDate)
+            chat.lastDate = getLatestChatTimestamp(chat)
+        }
     }
 
 }

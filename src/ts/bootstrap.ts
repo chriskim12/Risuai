@@ -31,7 +31,7 @@ import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import type { AccountStorage } from "./storage/accountStorage";
-import { makeColdData } from "./process/coldstorage.svelte";
+import { hotChatStorageHeader, makeColdData, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 import {
     forageStorage,
     saveDb,
@@ -242,6 +242,7 @@ export async function loadData() {
             startObserveDom()
             assignIds()
             makeColdData()
+            scheduleOffloadInactiveChats(0)
             registerModelDynamic()
             saveDb()
             moduleUpdate()
@@ -562,10 +563,24 @@ async function cleanChunks() {
         const characterIds = new Set<string>(
             db.characters.map((v) => v.chaId)
         )
+        const hotChatKeys = new Set<string>()
+        for(const character of db.characters){
+            for(const chat of character.chats){
+                const firstMessage = chat.message?.[0]?.data
+                if(firstMessage?.startsWith(hotChatStorageHeader)){
+                    hotChatKeys.add(firstMessage.slice(hotChatStorageHeader.length))
+                }
+            }
+        }
         for (const asset of indexes) {
             if (asset.startsWith('assets/')) {
                 const n = getBasename(asset)
                 if(!uncleanable.has(n)) {
+                    await forageStorage.removeItem(asset)
+                }
+            }
+            else if (asset.startsWith('chatcache/')) {
+                if(!hotChatKeys.has(asset)){
                     await forageStorage.removeItem(asset)
                 }
             }
