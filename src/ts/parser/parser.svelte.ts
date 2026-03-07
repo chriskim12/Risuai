@@ -43,6 +43,10 @@ const mdHighlight = markdownit({
 md.disable(['code'])
 mdHighlight.disable(['code'])
 
+const PARSE_MARKDOWN_CACHE_LIMIT = 96
+const PARSE_MARKDOWN_CACHE_MOBILE_LIMIT = 24
+const parseMarkdownCache = new Map<string, string>()
+
 DOMPurify.addHook("uponSanitizeElement", (node: HTMLElement, data) => {
     if (data.tagName === "iframe") {
        const src = node.getAttribute("src") || "";
@@ -201,6 +205,73 @@ function renderMarkdown(md:markdownit, data:string){
     }
 
     return text
+}
+
+function hashString(input:string) {
+    let h1 = 0xdeadbeef ^ input.length
+    let h2 = 0x41c6ce57 ^ input.length
+    for (let i = 0; i < input.length; i++) {
+        const ch = input.charCodeAt(i)
+        h1 = Math.imul(h1 ^ ch, 2654435761)
+        h2 = Math.imul(h2 ^ ch, 1597334677)
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+    return `${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}:${input.length}`
+}
+
+function hasRegexMatch(regex: RegExp, value: string) {
+    regex.lastIndex = 0
+    const matched = regex.test(value)
+    regex.lastIndex = 0
+    return matched
+}
+
+function shouldCacheParsedMarkdown(char: character | simpleCharacterArgument | groupChat | null, data: string) {
+    if (!data) {
+        return true
+    }
+    if (!char || char.type === 'group') {
+        return true
+    }
+    return (char.customscript?.length ?? 0) === 0 && !(char.virtualscript?.length) && (char.triggerscript?.length ?? 0) === 0
+}
+
+function getParseMarkdownCacheKey(
+    data: string,
+    char: character | simpleCharacterArgument | groupChat | null,
+    mode: 'normal' | 'back' | 'pretranslate' | 'notrim',
+    chatID: number,
+    cbsConditions: CbsConditions
+) {
+    const charKey = char
+        ? char.type === 'group'
+            ? `group:${char.name}:${char.characters?.length ?? 0}`
+            : `char:${char.chaId}:${char.additionalAssets?.length ?? 0}:${char.emotionImages?.length ?? 0}:${char.customscript?.length ?? 0}:${char.virtualscript?.length ?? 0}:${char.triggerscript?.length ?? 0}`
+        : 'none'
+
+    return hashString([
+        mode,
+        chatID,
+        cbsConditions.firstmsg ? '1' : '0',
+        cbsConditions.chatRole ?? '',
+        DBState.db?.hideAllImages ? '1' : '0',
+        DBState.db?.assetWidth ?? '',
+        DBState.db?.legacyMediaFindings ? '1' : '0',
+        DBState.db?.assetMaxDifference ?? '',
+        DBState.db?.unformatQuotes ? '1' : '0',
+        DBState.db?.blockquoteStyling ? '1' : '0',
+        DBState.db?.customQuotes ? (DBState.db?.customQuotesData ?? []).join('\u241f') : '',
+        charKey,
+        data,
+    ].join('\u241e'))
+}
+
+function trimParseMarkdownCache() {
+    trimCacheMap(
+        parseMarkdownCache,
+        isMobile ? PARSE_MARKDOWN_CACHE_MOBILE_LIMIT : PARSE_MARKDOWN_CACHE_LIMIT
+    )
 }
 
 async function renderHighlightableMarkdown(data:string) {
@@ -487,6 +558,10 @@ const imageCBS = ['img', 'image', 'emotion', 'asset', 'bg', 'raw', 'path']
 const videoExtensions = ['mp4', 'webm', 'avi', 'm4p', 'm4v']
 
 async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|character, mode:'normal'|'back', arg:{ch:number}){
+    if (!data.includes('{{') || !hasRegexMatch(assetRegex, data)) {
+        return data
+    }
+
     const assetWidthString = (DBState.db.assetWidth && DBState.db.assetWidth !== -1 || DBState.db.assetWidth === 0) ? `max-width:${DBState.db.assetWidth}rem;` : ''
 
     if (char.type === 'character' && (!assetsCache || !emoAssetsCache || assetsCacheCharId !== char.chaId)) {
@@ -700,6 +775,7 @@ function trimCacheMap<K, V>(cache:Map<K, V>, maxEntries:number, onEvict?:(value:
 
 export function trimParserAssetCaches(mode:'soft'|'hard' = 'soft'){
     if(mode === 'hard'){
+        parseMarkdownCache.clear()
         fileSrcCache.clear()
         for(const url of blobUrlCache.values()){
             URL.revokeObjectURL(url)
@@ -708,6 +784,7 @@ export function trimParserAssetCaches(mode:'soft'|'hard' = 'soft'){
         return
     }
 
+    trimParseMarkdownCache()
     trimCacheMap(
         fileSrcCache,
         isMobile ? PARSER_FILE_SRC_CACHE_MOBILE_LIMIT : PARSER_FILE_SRC_CACHE_LIMIT
@@ -720,53 +797,53 @@ export function trimParserAssetCaches(mode:'soft'|'hard' = 'soft'){
 }
 
 async function parseInlayAssets(data:string){
-    const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g)
-    if(inlayMatch){
-        const uniqueIds = [...new Set(inlayMatch.map((inlay) => {
-            return inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
-        }))]
-        const assetMap = new Map<string, {asset: Awaited<ReturnType<typeof getInlayAssetBlob>>, url?: string}>()
-
-        await Promise.all(uniqueIds.map(async (id) => {
-            const asset = await getInlayAssetBlob(id)
-            let url = blobUrlCache.get(id)
-            if(url){
-                blobUrlCache.delete(id)
-                blobUrlCache.set(id, url)
-            }
-            if(!url && asset?.data){
-                url = URL.createObjectURL(asset.data)
-                blobUrlCache.set(id, url)
-            }
-            assetMap.set(id, { asset, url })
-        }))
-        trimParserAssetCaches()
-
-        for(const inlay of inlayMatch){
-            const inlayType = inlay.startsWith('{{inlayed') ? 'inlayed' : 'inlay'
-            const id = inlay.substring(inlay.indexOf('::') + 2, inlay.length - 2)
-            const { asset, url } = assetMap.get(id) ?? {}
-            const prefix = inlayType !== 'inlay' ? `<div class="risu-inlay-image">` : ''
-            const postfix = inlayType !== 'inlay' ? `</div>\n\n` : ''
-
-            switch(asset?.type){
-                case 'image':
-                    if(DBState.db.hideAllImages){
-                        data = data.replace(inlay, '')
-                        break
-                    }
-                    data = data.replace(inlay, `${prefix}<img src="${url}"/>${postfix}`)
-                    break
-                case 'video':
-                    data = data.replace(inlay, `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`)
-                    break
-                case 'audio':
-                    data = data.replace(inlay, `${prefix}<audio controls><source src="${url}" type="audio/mpeg"></audio>${postfix}`)
-                    break
-            }
-        }
+    if (!data.includes('{{inlay')) {
+        return data
     }
-    return data
+
+    const inlayRegex = /{{(inlay|inlayed|inlayeddata)::(.+?)}}/g
+    const inlayMatch = [...data.matchAll(inlayRegex)]
+    if (inlayMatch.length === 0) {
+        return data
+    }
+
+    const uniqueIds = [...new Set(inlayMatch.map(([, , id]) => id))]
+    const assetMap = new Map<string, {asset: Awaited<ReturnType<typeof getInlayAssetBlob>>, url?: string}>()
+
+    await Promise.all(uniqueIds.map(async (id) => {
+        const asset = await getInlayAssetBlob(id)
+        let url = blobUrlCache.get(id)
+        if(url){
+            blobUrlCache.delete(id)
+            blobUrlCache.set(id, url)
+        }
+        if(!url && asset?.data){
+            url = URL.createObjectURL(asset.data)
+            blobUrlCache.set(id, url)
+        }
+        assetMap.set(id, { asset, url })
+    }))
+    trimParserAssetCaches()
+
+    return data.replace(inlayRegex, (inlay, inlayType:string, id:string) => {
+        const { asset, url } = assetMap.get(id) ?? {}
+        const prefix = inlayType !== 'inlay' ? `<div class="risu-inlay-image">` : ''
+        const postfix = inlayType !== 'inlay' ? `</div>\n\n` : ''
+
+        switch(asset?.type){
+            case 'image':
+                if(DBState.db.hideAllImages){
+                    return ''
+                }
+                return `${prefix}<img src="${url}"/>${postfix}`
+            case 'video':
+                return `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`
+            case 'audio':
+                return `${prefix}<audio controls><source src="${url}" type="audio/mpeg"></audio>${postfix}`
+            default:
+                return inlay
+        }
+    })
 }
 
 export interface simpleCharacterArgument{
@@ -812,6 +889,15 @@ export async function ParseMarkdown(
     let firstParsed = ''
     const additionalAssetMode = (mode === 'back') ? 'back' : 'normal'
     let char = (typeof(charArg) === 'string') ? (findCharacterbyId(charArg)) : (charArg)
+    const canUseCache = shouldCacheParsedMarkdown(char, data)
+    const cacheKey = canUseCache ? getParseMarkdownCacheKey(data, char, mode, chatID, cbsConditions) : null
+
+    if (cacheKey) {
+        const cached = parseMarkdownCache.get(cacheKey)
+        if (cached !== undefined) {
+            return cached
+        }
+    }
 
     if(char && char.type !== 'group'){
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
@@ -824,25 +910,40 @@ export async function ParseMarkdown(
         data = (await processScriptFull(char, data, 'editdisplay', chatID, cbsConditions)).data
     }
 
-    if(firstParsed !== data && char && char.type !== 'group'){
+    if(firstParsed !== data && char && char.type !== 'group' && data.includes('{{') && hasRegexMatch(assetRegex, data)){
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID
         })
     }
 
-    data = await parseInlayAssets(data ?? '')
+    if (data.includes('{{inlay')) {
+        data = await parseInlayAssets(data ?? '')
+    }
 
-    data = parseThoughtsAndTools(data)
+    if (data.includes('<Thoughts>') || data.includes('<tool_call>')) {
+        data = parseThoughtsAndTools(data)
+    }
 
     data = encodeStyle(data)
     if(mode === 'normal' || mode === 'notrim'){
-        data = await renderHighlightableMarkdown(data)
+        data = data.includes('```')
+            ? await renderHighlightableMarkdown(data)
+            : renderMarkdown(md, data)
 
         if(mode === 'notrim'){
+            if (cacheKey) {
+                parseMarkdownCache.set(cacheKey, data)
+                trimParseMarkdownCache()
+            }
             return data
         }
     }
-    return trimMarkdown(data)
+    const trimmed = trimMarkdown(data)
+    if (cacheKey) {
+        parseMarkdownCache.set(cacheKey, trimmed)
+        trimParseMarkdownCache()
+    }
+    return trimmed
 }
 
 export function trimMarkdown(data:string){
