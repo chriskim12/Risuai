@@ -14,7 +14,7 @@ import { doingChat } from "./process/index.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
 import { isMobile } from "./platform";
-import { scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
+import { rememberActiveChatAsRecentHot, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 
 export function createNewCharacter() {
     let db = getDatabase()
@@ -894,6 +894,7 @@ export function changeChar(index: number, arg:{
       return
     }
     if(isMobile && index !== get(selectedCharID)){
+        rememberActiveChatAsRecentHot()
         clearRuntimeAssetCaches('hard')
     }
     reseter();

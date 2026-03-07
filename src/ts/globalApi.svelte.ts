@@ -40,7 +40,7 @@ import { fetch as TauriHTTPFetch } from '@tauri-apps/plugin-http';
 import { moduleUpdate } from "./process/modules";
 import { inlayTokenRegex } from "./util/inlayTokens";
 import type { AccountStorage } from "./storage/accountStorage";
-import { consumeOffloadedCharacterIds, makeColdData, offloadInactiveChats, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
+import { consumeOffloadedCharacterIds, makeColdData, offloadInactiveChats, rememberActiveChatAsRecentHot, scheduleOffloadInactiveChats } from "./process/coldstorage.svelte";
 import { isMobile, isTauri, isNodeServer } from "./platform";
 
 export const forageStorage = new AutoStorage()
@@ -2330,6 +2330,7 @@ export function changeChatTo(IdOrIndex: string | number) {
     }
 
     if(isMobile && currentChatPage !== index){
+        rememberActiveChatAsRecentHot()
         clearRuntimeAssetCaches('hard')
     }
 

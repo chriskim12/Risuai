@@ -22,6 +22,31 @@ let hotChatOffloadDirty = true
 let hotChatOffloadPromise: Promise<string[]> | null = null
 let hotChatOffloadTimer: ReturnType<typeof setTimeout> | null = null
 const pendingOffloadedCharacterIds = new Set<string>()
+let recentHotChatKey: string | null = null
+
+function getChatMemoryKey(characterId:string, chatId:string){
+    return `${characterId}::${chatId}`
+}
+
+function isRecentHotChat(characterId:string, chatId:string){
+    return recentHotChatKey === getChatMemoryKey(characterId, chatId)
+}
+
+export function rememberActiveChatAsRecentHot(){
+    if(!isMobile){
+        return
+    }
+    const selectedIndex = get(selectedCharID)
+    if(selectedIndex < 0){
+        return
+    }
+    const character = DBState.db?.characters?.[selectedIndex]
+    const chat = character?.chats?.[character.chatPage]
+    if(!character?.chaId || !chat?.id){
+        return
+    }
+    recentHotChatKey = getChatMemoryKey(character.chaId, chat.id)
+}
 
 async function decompress(data:Uint8Array) {
     const fflate = await import('fflate')
@@ -335,6 +360,9 @@ export async function offloadInactiveChats(force = false){
 
                 const chat = character.chats[chatIndex]
                 if(!chat?.id || chat.isStreaming){
+                    continue
+                }
+                if(isRecentHotChat(character.chaId, chat.id)){
                     continue
                 }
                 if(isExternallyStoredChat(chat)){
